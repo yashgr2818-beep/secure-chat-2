@@ -49,17 +49,32 @@ export async function loadPrivateKey(username: string): Promise<CryptoKey | null
 }
 
 // Encrypt a plaintext string for a recipient (hybrid RSA+AES-GCM)
-export async function encryptMessage(plaintext: string, recipientPublicKey: CryptoKey): Promise<{ encryptedContent: string; encryptedKey: string; iv: string }> {
+export async function encryptMessage(
+  plaintext: string, 
+  recipientPublicKey: CryptoKey,
+  senderPublicKey?: CryptoKey
+): Promise<{ encryptedContent: string; encryptedKey: string; iv: string }> {
   const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const enc = new TextEncoder();
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey, enc.encode(plaintext));
   const rawAes = await crypto.subtle.exportKey("raw", aesKey);
-  const encryptedKey = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, recipientPublicKey, rawAes);
+  
   const toB64 = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  
+  // Encrypt for recipient
+  const encKeyForRecipient = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, recipientPublicKey, rawAes);
+  let finalEncryptedKey = toB64(encKeyForRecipient);
+
+  // If sender public key provided, also encrypt for sender
+  if (senderPublicKey) {
+    const encKeyForSender = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, senderPublicKey, rawAes);
+    finalEncryptedKey += `|${toB64(encKeyForSender)}`;
+  }
+
   return {
     encryptedContent: toB64(ciphertext),
-    encryptedKey: toB64(encryptedKey),
+    encryptedKey: finalEncryptedKey,
     iv: toB64(iv.buffer),
   };
 }
@@ -67,7 +82,25 @@ export async function encryptMessage(plaintext: string, recipientPublicKey: Cryp
 // Decrypt a message using the local private key
 export async function decryptMessage(encryptedContent: string, encryptedKey: string, iv: string, privateKey: CryptoKey): Promise<string> {
   const fromB64 = (s: string) => Uint8Array.from(atob(s), c => c.charCodeAt(0)).buffer;
-  const rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, privateKey, fromB64(encryptedKey));
+  
+  // Support multiple encrypted keys (delimited by |)
+  const keys = encryptedKey.split("|");
+  let rawAes: ArrayBuffer | null = null;
+  let lastError: any = null;
+
+  for (const k of keys) {
+    try {
+      rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, privateKey, fromB64(k));
+      break; // Success!
+    } catch (e) {
+      lastError = e;
+    }
+  }
+
+  if (!rawAes) {
+    throw lastError || new Error("Decryption failed: No matching key found");
+  }
+
   const aesKey = await crypto.subtle.importKey("raw", rawAes, "AES-GCM", false, ["decrypt"]);
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(fromB64(iv)) }, aesKey, fromB64(encryptedContent));
   return new TextDecoder().decode(plain);

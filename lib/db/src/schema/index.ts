@@ -1,20 +1,28 @@
-// Export your models here. Add one export per file
-// export * from "./posts";
-//
-// Each model/table should ideally be split into different files.
-// Each model/table should define a Drizzle table, insert schema, and types:
-//
-//   import { pgTable, text, serial } from "drizzle-orm/pg-core";
-//   import { createInsertSchema } from "drizzle-zod";
-//   import { z } from "zod/v4";
-//
-//   export const postsTable = pgTable("posts", {
-//     id: serial("id").primaryKey(),
-//     title: text("title").notNull(),
-//   });
-//
-//   export const insertPostSchema = createInsertSchema(postsTable).omit({ id: true });
-//   export type InsertPost = z.infer<typeof insertPostSchema>;
-//   export type Post = typeof postsTable.$inferSelect;
+import { pgTable, serial, text, timestamp, boolean, varchar } from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
 
-export {}
+export const usersTable = pgTable("users", {
+  id: serial("id").primaryKey(),
+  username: varchar("username", { length: 32 }).notNull().unique(),
+  passwordHash: varchar("password_hash", { length: 255 }).notNull(),
+  publicKey: text("public_key").notNull(),
+  lastSeen: timestamp("last_seen"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const messagesTable = pgTable("messages", {
+  id: serial("id").primaryKey(),
+  fromUsername: varchar("from_username", { length: 32 }).notNull(),
+  toUsername: varchar("to_username", { length: 32 }).notNull(),
+  encryptedContent: text("encrypted_content").notNull(),
+  encryptedKey: text("encrypted_key"),
+  iv: text("iv"),
+  timestamp: timestamp("timestamp").defaultNow().notNull(),
+  delivered: boolean("delivered").default(false).notNull(),
+});
+
+export const insertUserSchema = createInsertSchema(usersTable);
+export const insertMessageSchema = createInsertSchema(messagesTable);
+
+export type User = typeof usersTable.$inferSelect;
+export type Message = typeof messagesTable.$inferSelect;

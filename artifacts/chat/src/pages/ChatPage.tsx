@@ -258,14 +258,20 @@ export default function ChatPage() {
     setIsSending(true);
 
     try {
-      // 1. Fetch recipient public key
-      const pubKeyData = await getPublicKey(selectedUser);
+      // 1. Fetch keys
+      const [pubKeyData, myPubKeyData] = await Promise.all([
+        getPublicKey(selectedUser),
+        getPublicKey(me!.username)
+      ]);
       
-      // 2. Import it
-      const recipientPubKey = await importPublicKey(pubKeyData.publicKey);
+      // 2. Import them
+      const [recipientPubKey, myPubKey] = await Promise.all([
+        importPublicKey(pubKeyData.publicKey),
+        importPublicKey(myPubKeyData.publicKey)
+      ]);
       
-      // 3. Encrypt message
-      const { encryptedContent, encryptedKey, iv } = await encryptMessage(plaintext, recipientPubKey);
+      // 3. Encrypt message for both
+      const { encryptedContent, encryptedKey, iv } = await encryptMessage(plaintext, recipientPubKey, myPubKey);
       
       // 4. Send via WS
       sendWSMessage({

@@ -66,6 +66,16 @@ export default defineConfig({
     fs: {
       strict: true,
     },
+    proxy: {
+      "/api": {
+        target: "http://localhost:5000",
+        changeOrigin: true,
+      },
+      "/ws": {
+        target: "ws://localhost:5000",
+        ws: true,
+      },
+    },
   },
   preview: {
     port,
