@@ -1,7 +1,6 @@
 import os
-import asyncio
 import json
-import base64
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -12,27 +11,58 @@ from pydantic import BaseModel, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from passlib.context import CryptContext
 from jose import JWTError, jwt
-from bson import ObjectId
 
-# ── Config ──────────────────────────────────────────────────────────────────
+# ── Config ────────────────────────────────────────────────────────────────────
 MONGODB_URI = os.environ.get("MONGODB_URI", "")
-JWT_SECRET  = os.environ.get("SESSION_SECRET", "changeme-secret-key")
+JWT_SECRET  = os.environ.get("SESSION_SECRET", "supersecret-change-me")
 JWT_ALGO    = "HS256"
-JWT_EXPIRE_HOURS = 24 * 7  # 7 days
-PORT        = int(os.environ.get("PORT", 8080))
+JWT_EXPIRE_HOURS = 24 * 7
 
 if not MONGODB_URI:
-    raise RuntimeError("MONGODB_URI environment variable is not set")
+    raise RuntimeError("MONGODB_URI is not set — add it to Replit Secrets")
 
-# ── Database ─────────────────────────────────────────────────────────────────
-mongo_client: AsyncIOMotorClient = None
-db = None
+# Log (masked) URI for debugging
+_uri_display = MONGODB_URI[:40] + "..." if len(MONGODB_URI) > 40 else MONGODB_URI
+print(f"[startup] MONGODB_URI: {_uri_display}")
 
-async def get_db():
-    return db
+# ── Database ──────────────────────────────────────────────────────────────────
+_client: Optional[AsyncIOMotorClient] = None
+_db = None
+
+
+def get_db():
+    if _db is None:
+        raise HTTPException(status_code=503, detail="Database not connected")
+    return _db
+
+
+# ── Lifespan ──────────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _client, _db
+    print("[startup] Connecting to MongoDB…")
+    _client = AsyncIOMotorClient(MONGODB_URI, serverSelectionTimeoutMS=8000)
+    _db = _client["securechat"]
+    # Verify connection — non-fatal so server starts even if Atlas is slow
+    try:
+        await _client.admin.command("ping")
+        print("[startup] MongoDB ping OK")
+        await _db.users.create_index("username", unique=True)
+        await _db.messages.create_index([("fromUsername", 1), ("toUsername", 1)])
+        await _db.messages.create_index([("toUsername", 1), ("delivered", 1)])
+        print("[startup] Indexes ready")
+    except Exception as e:
+        print(f"[startup] WARNING — MongoDB connection issue: {e}")
+        print("[startup] Server will start but DB operations will fail until MongoDB is reachable.")
+    print("[startup] SecureChat API is up")
+    yield
+    if _client:
+        _client.close()
+        print("[shutdown] MongoDB connection closed")
+
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="SecureChat API", root_path="/api")
+app = FastAPI(title="SecureChat API", root_path="/api", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,40 +72,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def startup():
-    global mongo_client, db
-    mongo_client = AsyncIOMotorClient(MONGODB_URI)
-    db = mongo_client["securechat"]
-    # Indexes
-    await db.users.create_index("username", unique=True)
-    await db.messages.create_index([("fromUsername", 1), ("toUsername", 1)])
-    await db.messages.create_index([("toUsername", 1), ("delivered", 1)])
-    print(f"Connected to MongoDB — SecureChat API running on port {PORT}")
-
-@app.on_event("shutdown")
-async def shutdown():
-    if mongo_client:
-        mongo_client.close()
-
-# ── Security ─────────────────────────────────────────────────────────────────
+# ── Security ──────────────────────────────────────────────────────────────────
 pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
-bearer  = HTTPBearer()
+bearer  = HTTPBearer(auto_error=False)
+
 
 def hash_password(pw: str) -> str:
     return pwd_ctx.hash(pw)
 
+
 def verify_password(pw: str, hashed: str) -> bool:
     return pwd_ctx.verify(pw, hashed)
+
 
 def create_token(username: str) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
     return jwt.encode({"sub": username, "exp": expire}, JWT_SECRET, algorithm=JWT_ALGO)
 
+
 async def current_user(
-    creds: HTTPAuthorizationCredentials = Depends(bearer),
+    creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
     database=Depends(get_db),
 ) -> dict:
+    if not creds:
+        raise HTTPException(status_code=401, detail="Missing token")
     try:
         payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[JWT_ALGO])
         username: str = payload.get("sub")
@@ -88,21 +108,18 @@ async def current_user(
         raise HTTPException(status_code=401, detail="User not found")
     return user
 
+
 # ── Pydantic models ───────────────────────────────────────────────────────────
 class SignupInput(BaseModel):
     username: str = Field(min_length=3, max_length=32)
     password: str = Field(min_length=6)
-    publicKey: str  # JWK-encoded RSA-OAEP public key
+    publicKey: str
+
 
 class LoginInput(BaseModel):
     username: str
     password: str
 
-class MessageInput(BaseModel):
-    toUsername: str
-    encryptedContent: str   # base64 AES-GCM ciphertext
-    encryptedKey: str       # base64 AES key encrypted with recipient RSA public key
-    iv: str                 # base64 AES-GCM IV
 
 def serialize_user(u: dict, online: bool = False) -> dict:
     return {
@@ -112,7 +129,11 @@ def serialize_user(u: dict, online: bool = False) -> dict:
         "lastSeen": u.get("lastSeen"),
     }
 
+
 def serialize_message(m: dict) -> dict:
+    ts = m.get("timestamp")
+    if hasattr(ts, "isoformat"):
+        ts = ts.isoformat()
     return {
         "id": str(m["_id"]),
         "fromUsername": m["fromUsername"],
@@ -120,14 +141,15 @@ def serialize_message(m: dict) -> dict:
         "encryptedContent": m["encryptedContent"],
         "encryptedKey": m.get("encryptedKey"),
         "iv": m.get("iv"),
-        "timestamp": m["timestamp"].isoformat() if hasattr(m["timestamp"], "isoformat") else str(m["timestamp"]),
+        "timestamp": str(ts),
         "delivered": m.get("delivered", False),
     }
 
-# ── WebSocket connection manager ──────────────────────────────────────────────
+
+# ── WebSocket manager ─────────────────────────────────────────────────────────
 class ConnectionManager:
     def __init__(self):
-        self.active: dict[str, WebSocket] = {}  # username → ws
+        self.active: dict[str, WebSocket] = {}
 
     async def connect(self, username: str, ws: WebSocket):
         await ws.accept()
@@ -149,15 +171,17 @@ class ConnectionManager:
                 self.disconnect(username)
         return False
 
+
 manager = ConnectionManager()
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+
+# ── REST routes ───────────────────────────────────────────────────────────────
 
 @app.get("/healthz")
 async def health():
     return {"status": "ok"}
 
-# Auth
+
 @app.post("/auth/signup", status_code=201)
 async def signup(body: SignupInput, database=Depends(get_db)):
     existing = await database.users.find_one({"username": body.username})
@@ -175,6 +199,7 @@ async def signup(body: SignupInput, database=Depends(get_db)):
     token = create_token(body.username)
     return {"token": token, "user": serialize_user(doc, online=True)}
 
+
 @app.post("/auth/login")
 async def login(body: LoginInput, database=Depends(get_db)):
     user = await database.users.find_one({"username": body.username})
@@ -183,11 +208,12 @@ async def login(body: LoginInput, database=Depends(get_db)):
     token = create_token(body.username)
     return {"token": token, "user": serialize_user(user, online=manager.is_online(body.username))}
 
-# Users
+
 @app.get("/users")
 async def list_users(me=Depends(current_user), database=Depends(get_db)):
     users = await database.users.find({"username": {"$ne": me["username"]}}).to_list(200)
     return [serialize_user(u, online=manager.is_online(u["username"])) for u in users]
+
 
 @app.get("/users/{username}/public-key")
 async def get_public_key(username: str, me=Depends(current_user), database=Depends(get_db)):
@@ -196,14 +222,13 @@ async def get_public_key(username: str, me=Depends(current_user), database=Depen
         raise HTTPException(status_code=404, detail="User not found")
     return {"username": username, "publicKey": user["publicKey"]}
 
-# Messages
+
 @app.get("/messages/unread")
 async def get_unread(me=Depends(current_user), database=Depends(get_db)):
     msgs = await database.messages.find({
         "toUsername": me["username"],
         "delivered": False,
     }).sort("timestamp", 1).to_list(500)
-    # Mark as delivered
     ids = [m["_id"] for m in msgs]
     if ids:
         await database.messages.update_many(
@@ -211,6 +236,7 @@ async def get_unread(me=Depends(current_user), database=Depends(get_db)):
             {"$set": {"delivered": True}},
         )
     return [serialize_message(m) for m in msgs]
+
 
 @app.get("/messages/{username}")
 async def get_messages(username: str, me=Depends(current_user), database=Depends(get_db)):
@@ -222,10 +248,11 @@ async def get_messages(username: str, me=Depends(current_user), database=Depends
     }).sort("timestamp", 1).to_list(500)
     return [serialize_message(m) for m in msgs]
 
+
 # ── WebSocket ─────────────────────────────────────────────────────────────────
 @app.websocket("/ws")
-async def websocket_endpoint(ws: WebSocket, token: str = "", database=Depends(get_db)):
-    # Authenticate via query param token
+async def websocket_endpoint(ws: WebSocket, token: str = ""):
+    database = get_db()
     username = None
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
@@ -240,31 +267,22 @@ async def websocket_endpoint(ws: WebSocket, token: str = "", database=Depends(ge
 
     await manager.connect(username, ws)
 
-    # Deliver any stored offline messages
+    # Deliver offline messages
     offline_msgs = await database.messages.find({
         "toUsername": username,
         "delivered": False,
     }).sort("timestamp", 1).to_list(500)
 
     for msg in offline_msgs:
-        await manager.send_to(username, {
-            "type": "message",
-            "payload": serialize_message(msg),
-        })
+        await manager.send_to(username, {"type": "message", "payload": serialize_message(msg)})
     if offline_msgs:
         ids = [m["_id"] for m in offline_msgs]
-        await database.messages.update_many(
-            {"_id": {"$in": ids}},
-            {"$set": {"delivered": True}},
-        )
+        await database.messages.update_many({"_id": {"$in": ids}}, {"$set": {"delivered": True}})
 
-    # Broadcast online status
+    # Broadcast online
     for uname in list(manager.active.keys()):
         if uname != username:
             await manager.send_to(uname, {"type": "user_online", "username": username})
-
-    # Update lastSeen
-    await database.users.update_one({"username": username}, {"$set": {"lastSeen": None}})
 
     try:
         while True:
@@ -272,16 +290,15 @@ async def websocket_endpoint(ws: WebSocket, token: str = "", database=Depends(ge
             data = json.loads(raw)
 
             if data.get("type") == "message":
-                payload = data.get("payload", {})
-                to_user = payload.get("toUsername")
-                encrypted_content = payload.get("encryptedContent")
-                encrypted_key = payload.get("encryptedKey")
-                iv = payload.get("iv")
+                p = data.get("payload", {})
+                to_user = p.get("toUsername")
+                encrypted_content = p.get("encryptedContent")
+                encrypted_key = p.get("encryptedKey")
+                iv = p.get("iv")
 
                 if not to_user or not encrypted_content:
                     continue
 
-                # Recipient must exist
                 recipient = await database.users.find_one({"username": to_user})
                 if not recipient:
                     continue
@@ -297,20 +314,10 @@ async def websocket_endpoint(ws: WebSocket, token: str = "", database=Depends(ge
                 }
                 result = await database.messages.insert_one(msg_doc)
                 msg_doc["_id"] = result.inserted_id
-
                 serialized = serialize_message(msg_doc)
 
-                # Try to forward in real time
-                delivered = await manager.send_to(to_user, {
-                    "type": "message",
-                    "payload": serialized,
-                })
-
-                # Echo back to sender
-                await manager.send_to(username, {
-                    "type": "message_sent",
-                    "payload": serialized,
-                })
+                delivered = await manager.send_to(to_user, {"type": "message", "payload": serialized})
+                await manager.send_to(username, {"type": "message_sent", "payload": serialized})
 
                 if delivered:
                     await database.messages.update_one(
@@ -324,14 +331,10 @@ async def websocket_endpoint(ws: WebSocket, token: str = "", database=Depends(ge
     except WebSocketDisconnect:
         pass
     except Exception as e:
-        print(f"WebSocket error for {username}: {e}")
+        print(f"[ws] error for {username}: {e}")
     finally:
         manager.disconnect(username)
         now = datetime.now(timezone.utc).isoformat()
-        await database.users.update_one(
-            {"username": username},
-            {"$set": {"lastSeen": now}},
-        )
-        # Broadcast offline status
+        await database.users.update_one({"username": username}, {"$set": {"lastSeen": now}})
         for uname in list(manager.active.keys()):
             await manager.send_to(uname, {"type": "user_offline", "username": username})
