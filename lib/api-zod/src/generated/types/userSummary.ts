@@ -6,6 +6,10 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export interface HealthStatus {
-  status: string;
+export interface UserSummary {
+  id: number;
+  username: string;
+  online: boolean;
+  /** @nullable */
+  lastSeen?: string | null;
 }

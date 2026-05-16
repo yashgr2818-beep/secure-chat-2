@@ -1,0 +1,638 @@
+# Secure End-to-End Encrypted Real-Time Chat Application
+
+## Project Goal
+
+Build a browser-based real-time encrypted chat application where:
+
+* users can sign up and log in securely
+* messages are encrypted inside the browser before transmission
+* backend server cannot read message contents
+* only sender and receiver can decrypt messages
+* encrypted messages are stored securely in database
+* users receive messages instantly using WebSockets
+* offline users receive stored encrypted messages after login
+
+The system should work similarly to modern encrypted messaging platforms.
+
+---
+
+# Core Security Principle
+
+```text
+Encryption and decryption MUST happen only in the browser.
+```
+
+The backend server must NEVER see plain-text messages.
+
+---
+
+# Full System Architecture
+
+```text
+Frontend Browser
+    ↓ encrypted messages
+FastAPI Backend Server
+    ↓ encrypted storage
+MongoDB Database
+```
+
+---
+
+# Technology Stack
+
+# Frontend
+
+| Purpose            | Technology           |
+| ------------------ | -------------------- |
+| UI Structure       | HTML                 |
+| Styling            | CSS                  |
+| Frontend Logic     | JavaScript           |
+| Encryption         | Web Crypto API       |
+| Local Key Storage  | IndexedDB            |
+| Live Communication | Native WebSocket API |
+
+---
+
+# Backend
+
+| Purpose                 | Technology         |
+| ----------------------- | ------------------ |
+| Backend Framework       | FastAPI            |
+| ASGI Server             | Uvicorn            |
+| Real-Time Communication | FastAPI WebSockets |
+| Authentication          | JWT                |
+| Password Hashing        | passlib + bcrypt   |
+| MongoDB Driver          | Motor              |
+
+---
+
+# Database
+
+| Purpose      | Technology |
+| ------------ | ---------- |
+| Data Storage | MongoDB    |
+
+---
+
+# Frontend Responsibilities
+
+# 1. User Authentication UI
+
+Frontend should provide:
+
+* signup page
+* login page
+* chat interface
+* user list
+* message display
+* connection status
+
+---
+
+# 2. Generate Public/Private Key Pair
+
+## Library/API Used
+
+```javascript
+Web Crypto API
+```
+
+## Function
+
+```javascript
+crypto.subtle.generateKey()
+```
+
+## Purpose
+
+Generate:
+
+* Public Key
+* Private Key
+
+### Public Key
+
+Sent to backend and stored in database.
+
+### Private Key
+
+Stored ONLY inside browser IndexedDB.
+
+Private key must NEVER be sent to backend.
+
+---
+
+# 3. Store Private Key Locally
+
+## Storage Technology
+
+```javascript
+IndexedDB
+```
+
+## Purpose
+
+Securely store private key inside browser.
+
+---
+
+# 4. Encrypt Messages Before Sending
+
+## Library/API Used
+
+```javascript
+Web Crypto API
+```
+
+## Function
+
+```javascript
+crypto.subtle.encrypt()
+```
+
+## Purpose
+
+Encrypt message using recipient public key before sending to backend.
+
+Example:
+
+```text
+"Hello"
+↓
+Encrypted
+↓
+"x92#KaP!"
+```
+
+---
+
+# 5. Decrypt Incoming Messages
+
+## Library/API Used
+
+```javascript
+Web Crypto API
+```
+
+## Function
+
+```javascript
+crypto.subtle.decrypt()
+```
+
+## Purpose
+
+Decrypt received ciphertext using locally stored private key.
+
+---
+
+# 6. Real-Time Communication
+
+## Library/API Used
+
+```javascript
+Native WebSocket API
+```
+
+## Function
+
+```javascript
+new WebSocket()
+```
+
+## Purpose
+
+Maintain persistent live connection with backend.
+
+Used for:
+
+* instant messaging
+* online status
+* live updates
+
+---
+
+# Backend Responsibilities
+
+# 1. FastAPI Backend Server
+
+## Technology
+
+```python
+FastAPI
+```
+
+## Purpose
+
+Backend acts as:
+
+```text
+Router / Relay Server
+```
+
+Backend responsibilities:
+
+* signup/login APIs
+* JWT authentication
+* WebSocket management
+* public key distribution
+* encrypted message routing
+* offline encrypted message storage
+
+Backend must NEVER decrypt messages.
+
+---
+
+# 2. Run Backend Server
+
+## Technology
+
+```python
+Uvicorn
+```
+
+## Example
+
+```bash
+uvicorn main:app --reload
+```
+
+---
+
+# 3. WebSocket Management
+
+## Technology
+
+```python
+FastAPI WebSockets
+```
+
+## Purpose
+
+* maintain live user connections
+* instantly forward encrypted messages
+* track online/offline users
+
+---
+
+# 4. Password Security
+
+## Libraries
+
+```python
+passlib
+bcrypt
+```
+
+## Purpose
+
+Hash passwords securely before storing in database.
+
+Passwords must NEVER be stored in plain text.
+
+---
+
+# 5. JWT Authentication
+
+## Library
+
+```python
+python-jose
+```
+
+## Purpose
+
+Generate secure authentication tokens after login.
+
+Frontend sends JWT token during API requests and WebSocket connection.
+
+---
+
+# 6. MongoDB Connection
+
+## Library
+
+```python
+motor
+```
+
+## Example
+
+```python
+from motor.motor_asyncio import AsyncIOMotorClient
+```
+
+## Purpose
+
+Async communication with MongoDB database.
+
+---
+
+# Database Responsibilities
+
+# MongoDB Stores
+
+## 1. User Accounts
+
+Example:
+
+```json
+{
+  "username": "alice",
+  "password_hash": "..."
+}
+```
+
+---
+
+## 2. Public Keys
+
+Example:
+
+```json
+{
+  "username": "alice",
+  "public_key": "MIIBIj..."
+}
+```
+
+---
+
+## 3. Encrypted Messages
+
+Example:
+
+```json
+{
+  "from": "alice",
+  "to": "bob",
+  "ciphertext": "x92#KaP!",
+  "timestamp": "..."
+}
+```
+
+Database must NEVER store readable messages.
+
+---
+
+# Complete Message Flow
+
+# Step 1 — User Signup
+
+Frontend generates:
+
+```text
+Public Key
+Private Key
+```
+
+Using:
+
+```javascript
+crypto.subtle.generateKey()
+```
+
+### Public Key
+
+Uploaded to backend/database.
+
+### Private Key
+
+Stored in browser IndexedDB.
+
+---
+
+# Step 2 — Start Chat
+
+User A opens chat with User B.
+
+Frontend requests User B public key from backend.
+
+Backend fetches public key from MongoDB and returns it.
+
+---
+
+# Step 3 — Encrypt Message
+
+User types:
+
+```text
+"Hello"
+```
+
+Frontend encrypts locally using recipient public key:
+
+```javascript
+crypto.subtle.encrypt()
+```
+
+Result:
+
+```text
+"x92#KaP!"
+```
+
+---
+
+# Step 4 — Send Encrypted Message
+
+Frontend sends ciphertext through WebSocket connection.
+
+Example:
+
+```text
+"x92#KaP!"
+```
+
+---
+
+# Step 5 — Backend Routes Message
+
+Backend receives encrypted text.
+
+Backend:
+
+* checks recipient
+* checks online status
+* forwards encrypted data
+
+Backend CANNOT read message.
+
+---
+
+# Step 6 — Offline Message Handling
+
+If recipient offline:
+
+Backend stores encrypted ciphertext in MongoDB.
+
+---
+
+# Step 7 — Receive Message
+
+Recipient browser receives encrypted ciphertext.
+
+Frontend loads recipient private key from IndexedDB.
+
+---
+
+# Step 8 — Decrypt Message
+
+Frontend decrypts locally:
+
+```javascript
+crypto.subtle.decrypt()
+```
+
+Result:
+
+```text
+"Hello"
+```
+
+Message displayed in UI.
+
+---
+
+# Recommended Security Rules
+
+# MUST DO
+
+✅ Encrypt messages before network transmission
+
+✅ Store private keys locally only
+
+✅ Use HTTPS
+
+✅ Use password hashing
+
+✅ Use JWT authentication
+
+✅ Store only encrypted messages in database
+
+---
+
+# MUST NEVER DO
+
+❌ Never store private keys on backend
+
+❌ Never send plain-text messages to server
+
+❌ Never decrypt messages on backend
+
+❌ Never store passwords in plain text
+
+---
+
+# Recommended Future Improvements
+
+# 1. Session-Based Encryption
+
+Instead of encrypting every message directly with RSA:
+
+Use:
+
+```text
+RSA/ECC
+↓
+Securely exchange AES session key
+↓
+AES-GCM encrypts chat messages
+```
+
+This improves:
+
+* performance
+* scalability
+* modern security standards
+
+---
+
+# 2. Message Signing
+
+Optional future feature:
+
+Use digital signatures to verify sender identity.
+
+Possible libraries:
+
+* PyNaCl
+* cryptography
+
+---
+
+# Recommended Folder Structure
+
+```text
+project/
+│
+├── frontend/
+│   ├── index.html
+│   ├── style.css
+│   ├── app.js
+│   ├── crypto.js
+│   ├── websocket.js
+│   ├── auth.js
+│
+├── backend/
+│   ├── main.py
+│   ├── websocket.py
+│   ├── auth.py
+│   ├── database.py
+│   ├── models.py
+│   ├── security.py
+│
+├── requirements.txt
+│
+└── README.md
+```
+
+---
+
+# Development Phases
+
+# Phase 1
+
+Build frontend UI.
+
+---
+
+# Phase 2
+
+Build FastAPI backend and authentication.
+
+---
+
+# Phase 3
+
+Implement WebSocket real-time messaging.
+
+---
+
+# Phase 4
+
+Add browser-side encryption/decryption.
+
+---
+
+# Phase 5
+
+Add encrypted offline message storage.
+
+---
+
+# Phase 6
+
+Improve security and key management.
+
+---
+
+# Final Expected Result
+
+A secure browser-based real-time encrypted messaging platform where:
+
+* frontend handles all encryption/decryption
+* backend only routes encrypted data
+* database stores unreadable ciphertext
+* only intended users can read messages
+* real-time messaging works instantly using WebSockets
