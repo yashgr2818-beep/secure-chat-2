@@ -18,9 +18,9 @@ import {
   useGetMessages, 
   useGetUnreadMessages, 
   useGetPublicKey,
-  getPublicKey
+  getPublicKey,
+  type Message as ApiMessage
 } from "@workspace/api-client-react";
-import type { Message as ApiMessage } from "@workspace/api-client-react/src/generated/api.schemas";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -155,13 +155,13 @@ export default function ChatPage() {
   const { data: historyData, isLoading: historyLoading } = useGetMessages(selectedUser || "", {
     query: {
       enabled: !!selectedUser && !privateKeyMissing && !!privateKey,
-    }
+    } as any
   });
 
   const { data: unreadData } = useGetUnreadMessages({
     query: {
       enabled: !privateKeyMissing && !!privateKey,
-    }
+    } as any
   });
 
   // Decrypt history when loaded

@@ -34,6 +34,7 @@ export const requireAuth = async (req: AuthRequest, res: Response, next: NextFun
 
     req.user = { id: user.id, username: user.username };
     next();
+    return;
   } catch (err) {
     return res.status(401).json({ detail: "Invalid token" });
   }

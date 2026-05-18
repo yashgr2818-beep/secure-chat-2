@@ -2,7 +2,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import jwt from "jsonwebtoken";
 import { db, usersTable, messagesTable } from "@workspace/db";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, and } from "drizzle-orm";
 import { logger } from "./lib/logger";
 
 const JWT_SECRET = process.env.SESSION_SECRET || "supersecret-change-me";
@@ -73,8 +73,12 @@ export function setupWebSocket(server: Server) {
       const offlineMsgs = await db
         .select()
         .from(messagesTable)
-        .where(eq(messagesTable.toUsername, username))
-        .where(eq(messagesTable.delivered, false));
+        .where(
+          and(
+            eq(messagesTable.toUsername, username),
+            eq(messagesTable.delivered, false)
+          )
+        );
 
       for (const msg of offlineMsgs) {
         manager.sendTo(username, { type: "message", payload: serializeMessage(msg) });
@@ -83,7 +87,7 @@ export function setupWebSocket(server: Server) {
       if (offlineMsgs.length > 0) {
         await db.update(messagesTable)
           .set({ delivered: true })
-          .where(inArray(messagesTable.id, offlineMsgs.map(m => m.id)));
+          .where(inArray(messagesTable.id, offlineMsgs.map((m: any) => m.id)));
       }
 
       // Broadcast online status

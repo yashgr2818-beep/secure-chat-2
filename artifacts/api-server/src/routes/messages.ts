@@ -28,19 +28,19 @@ router.get("/messages/unread", requireAuth, async (req: AuthRequest, res) => {
     if (msgs.length > 0) {
       await db.update(messagesTable)
         .set({ delivered: true })
-        .where(inArray(messagesTable.id, msgs.map(m => m.id)));
+        .where(inArray(messagesTable.id, msgs.map((m: any) => m.id)));
     }
 
-    res.json(msgs.map(serializeMessage));
+    return res.json(msgs.map(serializeMessage));
   } catch (err) {
-    res.status(500).json({ detail: "Internal Server Error" });
+    return res.status(500).json({ detail: "Internal Server Error" });
   }
 });
 
 router.get("/messages/:username", requireAuth, async (req: AuthRequest, res) => {
   try {
     const me = req.user!;
-    const { username } = req.params;
+    const username = req.params.username as string;
 
     const msgs = await db.select().from(messagesTable)
       .where(
@@ -51,9 +51,9 @@ router.get("/messages/:username", requireAuth, async (req: AuthRequest, res) => 
       )
       .orderBy(messagesTable.timestamp);
 
-    res.json(msgs.map(serializeMessage));
+    return res.json(msgs.map(serializeMessage));
   } catch (err) {
-    res.status(500).json({ detail: "Internal Server Error" });
+    return res.status(500).json({ detail: "Internal Server Error" });
   }
 });
 

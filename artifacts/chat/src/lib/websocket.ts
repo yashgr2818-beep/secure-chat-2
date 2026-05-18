@@ -8,8 +8,18 @@ let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function connectWS(token: string) {
   if (socket && socket.readyState === WebSocket.OPEN) return;
-  const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const url = `${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+  
+  let url: string;
+  const apiUrl = import.meta.env.VITE_API_URL;
+  if (apiUrl && apiUrl.startsWith("http")) {
+    const parsed = new URL(apiUrl);
+    const wsProto = parsed.protocol === "https:" ? "wss:" : "ws:";
+    url = `${wsProto}//${parsed.host}/ws?token=${encodeURIComponent(token)}`;
+  } else {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    url = `${proto}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
+  }
+
   socket = new WebSocket(url);
 
   socket.onmessage = (e) => {

@@ -27,7 +27,7 @@ router.post("/auth/signup", async (req, res) => {
 
     const token = jwt.sign({ sub: username }, JWT_SECRET, { expiresIn: "7d" });
 
-    res.status(201).json({
+    return res.status(201).json({
       token,
       user: {
         id: user.id,
@@ -37,7 +37,7 @@ router.post("/auth/signup", async (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ detail: "Internal Server Error" });
+    return res.status(500).json({ detail: "Internal Server Error" });
   }
 });
 
@@ -57,7 +57,7 @@ router.post("/auth/login", async (req, res) => {
 
     const token = jwt.sign({ sub: username }, JWT_SECRET, { expiresIn: "7d" });
 
-    res.json({
+    return res.json({
       token,
       user: {
         id: user.id,
@@ -67,7 +67,7 @@ router.post("/auth/login", async (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ detail: "Internal Server Error" });
+    return res.status(500).json({ detail: "Internal Server Error" });
   }
 });
 
