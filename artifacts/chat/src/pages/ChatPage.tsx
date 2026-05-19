@@ -11,7 +11,8 @@ import {
   AlertCircle,
   MessageSquareOff,
   UserCircle,
-  Check
+  Check,
+  ShieldAlert
 } from "lucide-react";
 
 import { 
@@ -46,7 +47,8 @@ import {
   loadPrivateKey, 
   decryptMessage, 
   importPublicKey, 
-  encryptMessage 
+  encryptMessage,
+  deletePrivateKey 
 } from "@/lib/crypto";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -109,6 +111,11 @@ export default function ChatPage() {
   // Per-message-id tick status (only for messages sent by me)
   const [tickMap, setTickMap] = useState<Record<number, TickStatus>>({});
 
+  // Panic Wipe states
+  const [isWiping, setIsWiping] = useState(false);
+  const [wipeProgress, setWipeProgress] = useState(0);
+  const [wipeTerminalLogs, setWipeTerminalLogs] = useState<string[]>([]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -119,6 +126,76 @@ export default function ChatPage() {
     sendReadReceipt(username);
     setTimeout(() => inputRef.current?.focus(), 50);
   }, []);
+
+  const handlePanicWipe = useCallback(async () => {
+    if (isWiping || !me) return;
+    setIsWiping(true);
+    setWipeProgress(0);
+    setWipeTerminalLogs(["[!] PANIC PROTOCOL INITIATED..."]);
+
+    const addLog = (msg: string, delay: number) => {
+      return new Promise<void>(res => {
+        setTimeout(() => {
+          setWipeTerminalLogs(prev => [...prev, msg]);
+          res();
+        }, delay);
+      });
+    };
+
+    // Visual progress bar ticks
+    const interval = setInterval(() => {
+      setWipeProgress(prev => {
+        if (prev >= 100) {
+          clearInterval(interval);
+          return 100;
+        }
+        return prev + 10;
+      });
+    }, 100);
+
+    // Cryptographic & Session Wipe
+    try {
+      await addLog("[!] SEVERING WS CHANNEL CONNECTION...", 150);
+      disconnectWS();
+
+      await addLog("[!] DELETING LOCAL VAULT KEYS FROM STORAGE...", 300);
+      await deletePrivateKey(me.username);
+
+      await addLog("[!] PURGING LOCAL AUTHENTICATION TOKENS...", 250);
+      removeToken();
+      removeMe();
+
+      await addLog("[!] STORAGE WIPED. VAULT RENDERED INACCESSIBLE.", 300);
+      await addLog("[!] SHUTTING DOWN WORKSPACE...", 200);
+
+      // Hold for 300ms before redirecting
+      setTimeout(() => {
+        clearInterval(interval);
+        setLocation("/login");
+      }, 300);
+
+    } catch (err) {
+      console.error("Wipe failed:", err);
+      // Fallback raw clear
+      localStorage.clear();
+      indexedDB.deleteDatabase("securechat");
+      removeToken();
+      removeMe();
+      setLocation("/login");
+    }
+  }, [me, isWiping, setLocation]);
+
+  // Keyboard shortcut for Panic Wipe (Ctrl + Shift + W)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key.toUpperCase() === "W") {
+        e.preventDefault();
+        handlePanicWipe();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handlePanicWipe]);
 
   // 1. Initial auth & websocket setup
   useEffect(() => {
@@ -414,6 +491,48 @@ export default function ChatPage() {
   const activeThread = selectedUser ? messages[selectedUser] || [] : [];
   const selectedUserData = users.find(u => u.username === selectedUser);
 
+  // ── Self-Destructing / Panic Wipe Screen ────────────────────────────────────
+  if (isWiping) {
+    return (
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6 z-50 fixed inset-0 font-mono text-red-500 selection:bg-red-950 select-none">
+        <div className="max-w-lg w-full bg-black border border-red-900/50 rounded-xl p-8 shadow-[0_0_50px_rgba(239,68,68,0.15)] space-y-6 relative overflow-hidden">
+          {/* Glowing background grid */}
+          <div className="absolute inset-0 opacity-[0.05] pointer-events-none bg-[linear-gradient(rgba(239,68,68,0.1)_1px,transparent_1px),linear-gradient(90deg,rgba(239,68,68,0.1)_1px,transparent_1px)] bg-[size:16px_16px]" />
+
+          <div className="flex flex-col items-center space-y-4">
+            <div className="w-16 h-16 bg-red-950/40 rounded-full flex items-center justify-center border border-red-500/30 animate-pulse">
+              <ShieldAlert className="w-8 h-8 text-red-500" />
+            </div>
+            <h2 className="text-xl font-bold tracking-widest uppercase text-red-500 animate-pulse">
+              SECURITY COMPROMISED
+            </h2>
+          </div>
+
+          <div className="bg-red-950/10 border border-red-950 rounded-lg p-4 font-mono text-xs space-y-1.5 h-36 overflow-y-auto">
+            {wipeTerminalLogs.map((log, idx) => (
+              <div key={idx} className="leading-relaxed">
+                {log}
+              </div>
+            ))}
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex justify-between text-xs tracking-wider uppercase text-red-500/70">
+              <span>Wiping Secure Vault</span>
+              <span>{wipeProgress}%</span>
+            </div>
+            <div className="w-full bg-red-950/30 h-1.5 rounded-full overflow-hidden border border-red-900/30">
+              <div
+                className="bg-red-500 h-full transition-all duration-100 ease-out shadow-[0_0_10px_#ef4444]"
+                style={{ width: `${wipeProgress}%` }}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   // ── Private key missing screen ──────────────────────────────────────────────
   if (privateKeyMissing) {
     return (
@@ -543,9 +662,18 @@ export default function ChatPage() {
           )}
         </ScrollArea>
 
-        <div className="p-4 border-t border-border/60 bg-black/20 text-xs text-muted-foreground flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-          Identity: {me?.username}
+        <div className="p-4 border-t border-border/60 bg-black/20 text-xs text-muted-foreground flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
+            <span>Identity: {me?.username}</span>
+          </div>
+          <button
+            onClick={handlePanicWipe}
+            title="Emergency Wipe (Ctrl+Shift+W)"
+            className="p-1.5 rounded-md text-red-400 hover:text-red-300 hover:bg-red-950/30 border border-transparent hover:border-red-900/50 transition-all shrink-0 cursor-pointer"
+          >
+            <ShieldAlert className="w-4 h-4 animate-pulse" />
+          </button>
         </div>
       </div>
 

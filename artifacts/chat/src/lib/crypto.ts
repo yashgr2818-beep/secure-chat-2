@@ -36,6 +36,20 @@ export async function storePrivateKey(username: string, key: CryptoKey): Promise
   });
 }
 
+// Delete private key from IndexedDB under username
+export async function deletePrivateKey(username: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open("securechat", 1);
+    req.onsuccess = () => {
+      const tx = req.result.transaction("keys", "readwrite");
+      tx.objectStore("keys").delete(username);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    };
+    req.onerror = () => reject(req.error);
+  });
+}
+
 // Load private key from IndexedDB
 export async function loadPrivateKey(username: string): Promise<CryptoKey | null> {
   return new Promise((resolve, reject) => {
