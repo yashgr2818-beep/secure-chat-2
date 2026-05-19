@@ -129,3 +129,43 @@ export async function decryptMessage(encryptedContent: string, encryptedKey: str
   const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(fromB64(iv)) }, aesKey, fromB64(encryptedContent));
   return new TextDecoder().decode(plain);
 }
+
+// Encrypt a message for all group members (with optional admin escrow)
+export async function encryptGroupMessage(
+  plaintext: string,
+  membersPublicKeys: { username: string; publicKey: CryptoKey }[],
+  adminPublicKey?: CryptoKey
+): Promise<{ encryptedContent: string; keys: { [username: string]: string }; iv: string }> {
+  const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const enc = new TextEncoder();
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey, enc.encode(plaintext));
+  const rawAes = await crypto.subtle.exportKey("raw", aesKey);
+  
+  const toB64 = (buf: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  
+  const keys: { [username: string]: string } = {};
+
+  for (const member of membersPublicKeys) {
+    try {
+      const encKey = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, member.publicKey, rawAes);
+      let finalKey = toB64(encKey);
+
+      // If admin public key exists, escrow it!
+      if (adminPublicKey) {
+        const encKeyForAdmin = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, adminPublicKey, rawAes);
+        finalKey += `|${toB64(encKeyForAdmin)}`;
+      }
+
+      keys[member.username] = finalKey;
+    } catch (err) {
+      console.error(`Failed to encrypt key for member ${member.username}:`, err);
+    }
+  }
+
+  return {
+    encryptedContent: toB64(ciphertext),
+    keys,
+    iv: toB64(iv.buffer),
+  };
+}

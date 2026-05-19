@@ -12,7 +12,9 @@ import {
   MessageSquareOff,
   UserCircle,
   Check,
-  ShieldAlert
+  ShieldAlert,
+  Users,
+  Plus
 } from "lucide-react";
 
 import { 
@@ -21,8 +23,11 @@ import {
   useGetUnreadMessages, 
   useGetPublicKey,
   getPublicKey,
-  type Message as ApiMessage
+  type Message as ApiMessage,
+  customFetch
 } from "@workspace/api-client-react";
+
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -48,12 +53,14 @@ import {
   decryptMessage, 
   importPublicKey, 
   encryptMessage,
+  encryptGroupMessage,
   deletePrivateKey 
 } from "@/lib/crypto";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type DecryptedMessage = ApiMessage & {
+  groupId?: number;
   decryptedContent?: string;
   decryptionError?: boolean;
 };
@@ -100,6 +107,16 @@ export default function ChatPage() {
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
   const selectedUserRef = useRef<string | null>(null);
   selectedUserRef.current = selectedUser;
+
+  const [selectedGroupId, setSelectedGroupId] = useState<number | null>(null);
+  const selectedGroupIdRef = useRef<number | null>(null);
+  selectedGroupIdRef.current = selectedGroupId;
+
+  const [activeTab, setActiveTab] = useState<"direct" | "group">("direct");
+  const [isCreateGroupOpen, setIsCreateGroupOpen] = useState(false);
+  const [newGroupName, setNewGroupName] = useState("");
+  const [selectedGroupMembers, setSelectedGroupMembers] = useState<string[]>([]);
+
   const [messages, setMessages] = useState<Record<string, DecryptedMessage[]>>({});
   const messageInputRef = useRef(""); // Track input for draft preservation
   const [messageInput, setMessageInput] = useState("");
@@ -125,8 +142,15 @@ export default function ChatPage() {
   // Auto-focus input + send read receipt when a contact is selected
   const handleSelectUser = useCallback((username: string) => {
     setSelectedUser(username);
+    setSelectedGroupId(null);
     // Tell the server we've read all their messages
     sendReadReceipt(username);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, []);
+
+  const handleSelectGroup = useCallback((groupId: number) => {
+    setSelectedGroupId(groupId);
+    setSelectedUser(null);
     setTimeout(() => inputRef.current?.focus(), 50);
   }, []);
 
@@ -231,9 +255,54 @@ export default function ChatPage() {
         setLiveStatuses(prev => ({ ...prev, [username]: online }));
       }),
 
-      onMessage(async (msg: ApiMessage) => {
+      onMessage(async (rawMsg: ApiMessage) => {
         if (!me) return;
-        const partner = msg.fromUsername === me.username ? msg.toUsername : msg.fromUsername;
+        const msg = rawMsg as any;
+
+        // Group message handling
+        if (msg.groupId) {
+          const threadKey = `group_${msg.groupId}`;
+          let decrypted: DecryptedMessage = { ...msg };
+          try {
+            const keyToUse = await loadPrivateKey(me.username);
+            if (keyToUse && msg.encryptedKey && msg.iv) {
+              decrypted.decryptedContent = await decryptMessage(
+                msg.encryptedContent, msg.encryptedKey, msg.iv, keyToUse
+              );
+            } else {
+              decrypted.decryptionError = true;
+            }
+          } catch {
+            decrypted.decryptionError = true;
+          }
+
+          setMessages(prev => {
+            const thread = prev[threadKey] || [];
+            if (thread.some(m => m.id === msg.id)) return prev;
+            return {
+              ...prev,
+              [threadKey]: [...thread, decrypted].sort(
+                (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+              )
+            };
+          });
+
+          // In-app group notification if not looking at this group thread
+          if (msg.fromUsername !== me.username) {
+            const activeGroupId = selectedGroupIdRef.current;
+            if (msg.groupId !== activeGroupId) {
+              toast({
+                title: `💬 New message in group`,
+                description: `${msg.fromUsername}: ${decrypted.decryptedContent || "🔒 Encrypted content"}`,
+                duration: 4000,
+              });
+            }
+          }
+          return;
+        }
+
+        // Direct message handling (fallback)
+        const partner = msg.fromUsername === me.username ? msg.toUsername! : msg.fromUsername;
 
         let decrypted: DecryptedMessage = { ...msg };
         try {
@@ -330,6 +399,43 @@ export default function ChatPage() {
     } as any
   });
 
+  const { data: historyData, isLoading: historyLoading } = useGetMessages(selectedUser || "", {
+    query: {
+      enabled: !!selectedUser && !privateKeyMissing && !!privateKey,
+      refetchInterval: 1000,
+      refetchIntervalInBackground: false,
+    } as any
+  });
+
+  const { data: unreadData } = useGetUnreadMessages({
+    query: {
+      enabled: !privateKeyMissing && !!privateKey,
+      refetchInterval: 1000,
+      refetchIntervalInBackground: false,
+    } as any
+  });
+
+  const { data: groupsData, refetch: refetchGroups } = useQuery<any[]>({
+    queryKey: ["groups"],
+    queryFn: async () => {
+      const res = await customFetch("/groups");
+      return res as any[];
+    },
+    refetchInterval: 2000,
+    enabled: !privateKeyMissing && !!privateKey,
+  });
+
+  const { data: groupMessagesData, isLoading: groupMessagesLoading } = useQuery<any[]>({
+    queryKey: ["groupMessages", selectedGroupId],
+    queryFn: async () => {
+      if (!selectedGroupId) return [];
+      const res = await customFetch(`/groups/${selectedGroupId}/messages`);
+      return res as any[];
+    },
+    enabled: !!selectedGroupId && !privateKeyMissing && !!privateKey,
+    refetchInterval: 1000,
+  });
+
   // Last message per conversation for sidebar preview
   const lastMessageMap = useMemo(() => {
     const map: Record<string, DecryptedMessage> = {};
@@ -364,29 +470,13 @@ export default function ChatPage() {
       .sort((a, b) => {
         const aTime = lastMessageMap[a.username]?.timestamp
           ? new Date(lastMessageMap[a.username].timestamp).getTime()
-          : (a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : (a.lastSeen ? new Date(a.lastSeen).getTime() : 0));
+          : ((a as any).lastMessageAt ? new Date((a as any).lastMessageAt).getTime() : (a.lastSeen ? new Date(a.lastSeen).getTime() : 0));
         const bTime = lastMessageMap[b.username]?.timestamp
           ? new Date(lastMessageMap[b.username].timestamp).getTime()
-          : (b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : (b.lastSeen ? new Date(b.lastSeen).getTime() : 0));
+          : ((b as any).lastMessageAt ? new Date((b as any).lastMessageAt).getTime() : (b.lastSeen ? new Date(b.lastSeen).getTime() : 0));
         return bTime - aTime; // most recent first
       });
   }, [usersData, liveStatuses, searchQuery, me?.username, lastMessageMap]);
-
-  const { data: historyData, isLoading: historyLoading } = useGetMessages(selectedUser || "", {
-    query: {
-      enabled: !!selectedUser && !privateKeyMissing && !!privateKey,
-      refetchInterval: 1000,
-      refetchIntervalInBackground: false,
-    } as any
-  });
-
-  const { data: unreadData } = useGetUnreadMessages({
-    query: {
-      enabled: !privateKeyMissing && !!privateKey,
-      refetchInterval: 1000,
-      refetchIntervalInBackground: false,
-    } as any
-  });
 
   // Decrypt history when loaded
   useEffect(() => {
@@ -423,6 +513,35 @@ export default function ChatPage() {
 
     decryptHistory();
   }, [historyData, selectedUser, privateKey, me?.username]);
+
+  // Decrypt group messages when loaded
+  useEffect(() => {
+    if (!selectedGroupId || !groupMessagesData || !privateKey) return;
+
+    const decryptGroupMsgs = async () => {
+      const decryptedMsgs: DecryptedMessage[] = [];
+
+      for (const msg of groupMessagesData) {
+        let dec: DecryptedMessage = { ...msg };
+        try {
+          if (msg.encryptedKey && msg.iv) {
+            dec.decryptedContent = await decryptMessage(
+              msg.encryptedContent, msg.encryptedKey, msg.iv, privateKey
+            );
+          } else {
+            dec.decryptionError = true;
+          }
+        } catch {
+          dec.decryptionError = true;
+        }
+        decryptedMsgs.push(dec);
+      }
+
+      setMessages(prev => ({ ...prev, [`group_${selectedGroupId}`]: decryptedMsgs }));
+    };
+
+    decryptGroupMsgs();
+  }, [groupMessagesData, selectedGroupId, privateKey]);
 
   // Decrypt unread on mount
   useEffect(() => {
@@ -492,44 +611,77 @@ export default function ChatPage() {
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!messageInput.trim() || !selectedUser || isSending || privateKeyMissing) return;
+    if (!messageInput.trim() || (!selectedUser && !selectedGroupId) || isSending || privateKeyMissing) return;
 
     const plaintext = messageInput.trim();
     setMessageInput("");
     setIsSending(true);
 
     try {
-      const [pubKeyData, myPubKeyData] = await Promise.all([
-        getPublicKey(selectedUser),
-        getPublicKey(me!.username)
-      ]);
+      if (selectedGroupId) {
+        const selectedGroupData = groupsData?.find(g => g.id === selectedGroupId);
+        if (!selectedGroupData) return;
 
-      const [recipientPubKey, myPubKey] = await Promise.all([
-        importPublicKey(pubKeyData.publicKey),
-        importPublicKey(myPubKeyData.publicKey)
-      ]);
+        // Fetch all group members' public keys in parallel
+        const membersPublicKeys = await Promise.all(
+          selectedGroupData.members.map(async (username: string) => {
+            const pubKeyData = await getPublicKey(username);
+            const cryptoKey = await importPublicKey(pubKeyData.publicKey);
+            return { username, publicKey: cryptoKey };
+          })
+        );
 
-      let adminPubKey: CryptoKey | undefined;
-      try {
-        const adminPubKeyData = await getPublicKey("admin");
-        if (adminPubKeyData?.publicKey) {
-          adminPubKey = await importPublicKey(adminPubKeyData.publicKey);
+        let adminPubKey: CryptoKey | undefined;
+        try {
+          const adminPubKeyData = await getPublicKey("admin");
+          if (adminPubKeyData?.publicKey) {
+            adminPubKey = await importPublicKey(adminPubKeyData.publicKey);
+          }
+        } catch {
+          // Admin user does not exist yet
         }
-      } catch {
-        // Admin user does not exist yet in this deployment
+
+        const { encryptedContent, keys, iv } = await encryptGroupMessage(
+          plaintext,
+          membersPublicKeys,
+          adminPubKey
+        );
+
+        sendWSMessage({ groupId: selectedGroupId, encryptedContent, keys, iv });
+
+      } else if (selectedUser) {
+        const [pubKeyData, myPubKeyData] = await Promise.all([
+          getPublicKey(selectedUser),
+          getPublicKey(me!.username)
+        ]);
+
+        const [recipientPubKey, myPubKey] = await Promise.all([
+          importPublicKey(pubKeyData.publicKey),
+          importPublicKey(myPubKeyData.publicKey)
+        ]);
+
+        let adminPubKey: CryptoKey | undefined;
+        try {
+          const adminPubKeyData = await getPublicKey("admin");
+          if (adminPubKeyData?.publicKey) {
+            adminPubKey = await importPublicKey(adminPubKeyData.publicKey);
+          }
+        } catch {
+          // Admin user does not exist yet in this deployment
+        }
+
+        const { encryptedContent, encryptedKey, iv } = await encryptMessage(
+          plaintext, recipientPubKey, myPubKey, adminPubKey
+        );
+
+        sendWSMessage({ toUsername: selectedUser, encryptedContent, encryptedKey, iv });
       }
-
-      const { encryptedContent, encryptedKey, iv } = await encryptMessage(
-        plaintext, recipientPubKey, myPubKey, adminPubKey
-      );
-
-      sendWSMessage({ toUsername: selectedUser, encryptedContent, encryptedKey, iv });
 
     } catch (err) {
       console.error("Failed to send encrypted message:", err);
       toast({
         title: "Transmission Error",
-        description: "Failed to encrypt and send message. Target user may not have valid keys.",
+        description: "Failed to encrypt and send message. Target user or members may not have valid keys.",
         variant: "destructive"
       });
     } finally {
@@ -537,8 +689,29 @@ export default function ChatPage() {
     }
   };
 
-  const activeThread = selectedUser ? messages[selectedUser] || [] : [];
-  const selectedUserData = users.find(u => u.username === selectedUser);
+  const createGroupMutation = useMutation({
+    mutationFn: async (payload: { name: string; members: string[] }) => {
+      return customFetch("/groups", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+    },
+    onSuccess: () => {
+      refetchGroups();
+      setIsCreateGroupOpen(false);
+      setNewGroupName("");
+      setSelectedGroupMembers([]);
+      toast({ title: "🔐 Group Created", description: "Your E2EE secure group is ready!" });
+    },
+    onError: () => {
+      toast({ title: "Error", description: "Failed to create group.", variant: "destructive" });
+    }
+  });
+
+  const activeThread = selectedGroupId ? (messages[`group_${selectedGroupId}`] || []) : (selectedUser ? messages[selectedUser] || [] : []);
+  const selectedUserData = selectedUser ? users.find(u => u.username === selectedUser) : undefined;
+  const selectedGroupData = selectedGroupId ? groupsData?.find(g => g.id === selectedGroupId) : undefined;
 
   // ── Self-Destructing / Panic Wipe Screen ────────────────────────────────────
   if (isWiping) {
@@ -642,12 +815,26 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <div className="p-4 border-b border-border/60">
+        <div className="p-4 border-b border-border/60 space-y-3">
+          <div className="flex bg-black/40 rounded-lg p-1 border border-border/50">
+            <button
+              className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${activeTab === "direct" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setActiveTab("direct")}
+            >
+              Chats
+            </button>
+            <button
+              className={`flex-1 py-1.5 text-xs font-medium rounded-md transition-all ${activeTab === "group" ? "bg-primary text-primary-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
+              onClick={() => setActiveTab("group")}
+            >
+              Groups
+            </button>
+          </div>
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
             <Input
-              placeholder="Search contacts"
-              className="pl-9 bg-black/20 border-border/50 focus-visible:ring-primary/50"
+              placeholder={activeTab === "direct" ? "Search contacts" : "Search groups"}
+              className="pl-9 bg-black/20 border-border/50 focus-visible:ring-primary/50 h-9"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -655,81 +842,137 @@ export default function ChatPage() {
         </div>
 
         <ScrollArea className="flex-1">
-          {usersLoading ? (
-            <div className="p-4 space-y-4">
-              {[1, 2, 3, 4].map(i => (
-                <div key={i} className="flex items-center gap-3">
-                  <Skeleton className="w-10 h-10 rounded-full" />
-                  <div className="space-y-2">
-                    <Skeleton className="h-4 w-24" />
-                    <Skeleton className="h-3 w-16" />
-                  </div>
+          {activeTab === "direct" && (
+            <>
+              {usersLoading ? (
+                <div className="p-4 space-y-4">
+                  {[1, 2, 3, 4].map(i => (
+                    <div key={i} className="flex items-center gap-3">
+                      <Skeleton className="w-10 h-10 rounded-full" />
+                      <div className="space-y-2">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-3 w-16" />
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : users.length === 0 ? (
-            <div className="p-8 text-center text-muted-foreground flex flex-col items-center">
-              <UserCircle className="w-8 h-8 mb-2 opacity-50" />
-              <p className="text-sm">No contacts found</p>
-            </div>
-          ) : (
-            <div className="p-2 space-y-1">
-              {users.map(user => {
-                const lastMsg = lastMessageMap[user.username];
-                const lastMsgText = lastMsg?.decryptedContent
-                  ? (lastMsg.fromUsername === me?.username ? `You: ${lastMsg.decryptedContent}` : lastMsg.decryptedContent)
-                  : lastMsg?.decryptionError
-                    ? "🔒 Encrypted message"
-                    : null;
-                const lastMsgTime = lastMsg
-                  ? format(new Date(lastMsg.timestamp), "HH:mm")
-                  : null;
-                const unreadCount = unreadCountMap[user.username] || 0;
-                return (
-                  <button
-                    key={user.username}
-                    onClick={() => handleSelectUser(user.username)}
-                    className={`w-full flex items-center gap-3 p-3 rounded-md transition-all ${
-                      selectedUser === user.username
-                        ? "bg-primary/10 text-primary border border-primary/20"
-                        : "hover:bg-secondary/50 text-sidebar-foreground border border-transparent"
-                    }`}
-                  >
-                    <div className="relative shrink-0">
-                      <Avatar className="w-10 h-10 border border-border/50">
-                        <AvatarFallback className="bg-black/40 text-xs text-muted-foreground">
-                          {user.username.slice(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      <span
-                        className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-sidebar ${
-                          user.online ? "bg-green-500" : "bg-muted"
+              ) : users.length === 0 ? (
+                <div className="p-8 text-center text-muted-foreground flex flex-col items-center">
+                  <UserCircle className="w-8 h-8 mb-2 opacity-50" />
+                  <p className="text-sm">No contacts found</p>
+                </div>
+              ) : (
+                <div className="p-2 space-y-1">
+                  {users.map(user => {
+                    const lastMsg = lastMessageMap[user.username];
+                    const lastMsgText = lastMsg?.decryptedContent
+                      ? (lastMsg.fromUsername === me?.username ? `You: ${lastMsg.decryptedContent}` : lastMsg.decryptedContent)
+                      : lastMsg?.decryptionError
+                        ? "🔒 Encrypted message"
+                        : null;
+                    const lastMsgTime = lastMsg
+                      ? format(new Date(lastMsg.timestamp), "HH:mm")
+                      : null;
+                    const unreadCount = unreadCountMap[user.username] || 0;
+                    return (
+                      <button
+                        key={user.username}
+                        onClick={() => handleSelectUser(user.username)}
+                        className={`w-full flex items-center gap-3 p-3 rounded-md transition-all ${
+                          selectedUser === user.username
+                            ? "bg-primary/10 text-primary border border-primary/20"
+                            : "hover:bg-secondary/50 text-sidebar-foreground border border-transparent"
                         }`}
-                      />
-                    </div>
-                    <div className="flex flex-col items-start text-left flex-1 overflow-hidden pr-1">
-                      <span className="font-medium truncate tracking-tight w-full">{user.username}</span>
-                      <span className="text-xs text-muted-foreground truncate w-full mt-0.5">
-                        {lastMsgText ?? (user.online ? "Connected" : user.lastSeen ? `Last seen ${format(new Date(user.lastSeen), "MMM d, HH:mm")}` : "Offline")}
-                      </span>
-                    </div>
-                    <div className="flex flex-col items-end justify-between shrink-0 self-stretch min-h-10">
-                      {lastMsgTime ? (
-                        <span className="text-[10px] text-muted-foreground/60">{lastMsgTime}</span>
-                      ) : (
-                        <span className="text-[10px] opacity-0">00:00</span>
-                      )}
-                      {unreadCount > 0 ? (
-                        <Badge className="bg-green-500 hover:bg-green-600 text-white rounded-full text-[9px] min-w-[18px] h-[18px] p-0 flex items-center justify-center font-bold shadow-[0_0_8px_rgba(34,197,94,0.3)] border-0 mt-1">
-                          {unreadCount}
-                        </Badge>
-                      ) : (
-                        <div className="h-[18px] mt-1" />
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+                      >
+                        <div className="relative shrink-0">
+                          <Avatar className="w-10 h-10 border border-border/50">
+                            <AvatarFallback className="bg-black/40 text-xs text-muted-foreground">
+                              {user.username.slice(0, 2).toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span
+                            className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-sidebar ${
+                              user.online ? "bg-green-500" : "bg-muted"
+                            }`}
+                          />
+                        </div>
+                        <div className="flex flex-col items-start text-left flex-1 overflow-hidden pr-1">
+                          <span className="font-medium truncate tracking-tight w-full">{user.username}</span>
+                          <span className="text-xs text-muted-foreground truncate w-full mt-0.5">
+                            {lastMsgText ?? (user.online ? "Connected" : user.lastSeen ? `Last seen ${format(new Date(user.lastSeen), "MMM d, HH:mm")}` : "Offline")}
+                          </span>
+                        </div>
+                        <div className="flex flex-col items-end justify-between shrink-0 self-stretch min-h-10">
+                          {lastMsgTime ? (
+                            <span className="text-[10px] text-muted-foreground/60">{lastMsgTime}</span>
+                          ) : (
+                            <span className="text-[10px] opacity-0">00:00</span>
+                          )}
+                          {unreadCount > 0 ? (
+                            <Badge className="bg-green-500 hover:bg-green-600 text-white rounded-full text-[9px] min-w-[18px] h-[18px] p-0 flex items-center justify-center font-bold shadow-[0_0_8px_rgba(34,197,94,0.3)] border-0 mt-1">
+                              {unreadCount}
+                            </Badge>
+                          ) : (
+                            <div className="h-[18px] mt-1" />
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          )}
+
+          {activeTab === "group" && (
+            <div className="p-2 space-y-1">
+              <button
+                onClick={() => setIsCreateGroupOpen(true)}
+                className="w-full flex items-center gap-3 p-3 rounded-md transition-all hover:bg-primary/20 text-primary border border-primary/30 mb-2 group"
+              >
+                <div className="w-10 h-10 rounded-full bg-primary/20 flex items-center justify-center group-hover:bg-primary text-primary group-hover:text-primary-foreground transition-colors">
+                  <Plus className="w-5 h-5" />
+                </div>
+                <div className="flex flex-col items-start text-left flex-1">
+                  <span className="font-semibold text-sm">Create New Group</span>
+                  <span className="text-xs text-primary/70">Secure E2EE Escrow</span>
+                </div>
+              </button>
+
+              {!groupsData || groupsData.length === 0 ? (
+                <div className="p-8 text-center text-muted-foreground flex flex-col items-center">
+                  <Users className="w-8 h-8 mb-2 opacity-50" />
+                  <p className="text-sm">No groups joined</p>
+                </div>
+              ) : (
+                groupsData
+                  .filter(g => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                  .map(group => {
+                    return (
+                      <button
+                        key={group.id}
+                        onClick={() => handleSelectGroup(group.id)}
+                        className={`w-full flex items-center gap-3 p-3 rounded-md transition-all ${
+                          selectedGroupId === group.id
+                            ? "bg-primary/10 text-primary border border-primary/20"
+                            : "hover:bg-secondary/50 text-sidebar-foreground border border-transparent"
+                        }`}
+                      >
+                        <div className="relative shrink-0">
+                          <Avatar className="w-10 h-10 border border-border/50 bg-secondary flex items-center justify-center">
+                            <Users className="w-5 h-5 text-muted-foreground" />
+                          </Avatar>
+                        </div>
+                        <div className="flex flex-col items-start text-left flex-1 overflow-hidden pr-1">
+                          <span className="font-medium truncate tracking-tight w-full">{group.name}</span>
+                          <span className="text-xs text-muted-foreground truncate w-full mt-0.5">
+                            {group.members.length} members
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })
+              )}
             </div>
           )}
         </ScrollArea>
@@ -751,23 +994,39 @@ export default function ChatPage() {
 
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col bg-background relative">
-        {selectedUser ? (
+        {(selectedUser || selectedGroupId) ? (
           <>
             {/* Header */}
             <div className="h-16 flex items-center justify-between px-6 border-b border-border/60 bg-card/30 backdrop-blur-sm z-10">
               <div className="flex items-center gap-3">
-                <Avatar className="w-9 h-9 border border-border">
-                  <AvatarFallback className="bg-black/40 text-xs">
-                    {selectedUser.slice(0, 2).toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <h3 className="font-medium tracking-tight">{selectedUser}</h3>
-                  <p className="text-xs text-muted-foreground flex items-center gap-1">
-                    <span className={`w-1.5 h-1.5 rounded-full inline-block ${selectedUserData?.online ? "bg-green-500" : "bg-muted"}`} />
-                    {selectedUserData?.online ? "Secure tunnel active" : "Offline mode"}
-                  </p>
-                </div>
+                {selectedGroupId ? (
+                  <>
+                    <div className="w-9 h-9 rounded-full bg-primary/15 border border-primary/30 flex items-center justify-center">
+                      <Users className="w-4 h-4 text-primary" />
+                    </div>
+                    <div>
+                      <h3 className="font-medium tracking-tight">{selectedGroupData?.name ?? "Group"}</h3>
+                      <p className="text-xs text-muted-foreground">
+                        {selectedGroupData?.members?.length ?? 0} members &bull; E2EE group
+                      </p>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <Avatar className="w-9 h-9 border border-border">
+                      <AvatarFallback className="bg-black/40 text-xs">
+                        {selectedUser!.slice(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <h3 className="font-medium tracking-tight">{selectedUser}</h3>
+                      <p className="text-xs text-muted-foreground flex items-center gap-1">
+                        <span className={`w-1.5 h-1.5 rounded-full inline-block ${selectedUserData?.online ? "bg-green-500" : "bg-muted"}`} />
+                        {selectedUserData?.online ? "Secure tunnel active" : "Offline mode"}
+                      </p>
+                    </div>
+                  </>
+                )}
               </div>
               <Badge variant="outline" className="bg-primary/5 text-primary border-primary/20 flex items-center gap-1.5 px-3 py-1">
                 <Lock className="w-3 h-3" /> E2E Encrypted
@@ -789,7 +1048,7 @@ export default function ChatPage() {
                     </p>
                   </div>
 
-                  {historyLoading ? (
+                  {(selectedGroupId ? groupMessagesLoading : historyLoading) ? (
                     <div className="space-y-4">
                       <div className="flex justify-start"><Skeleton className="h-16 w-64 rounded-2xl rounded-tl-sm" /></div>
                       <div className="flex justify-end"><Skeleton className="h-16 w-48 rounded-2xl rounded-tr-sm" /></div>
@@ -816,6 +1075,11 @@ export default function ChatPage() {
                           {showTime && (
                             <span className="text-[10px] text-muted-foreground/60 mb-2 font-mono tracking-wider">
                               {format(new Date(msg.timestamp), "MMM d, HH:mm")}
+                            </span>
+                          )}
+                          {selectedGroupId && !isMe && (
+                            <span className="text-[10px] text-primary/70 font-semibold mb-0.5 ml-1">
+                              {msg.fromUsername}
                             </span>
                           )}
                           <div
@@ -872,7 +1136,7 @@ export default function ChatPage() {
                     ref={inputRef}
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
-                    placeholder="Type an encrypted message..."
+                    placeholder={selectedGroupId ? "Type a group message..." : "Type an encrypted message..."}
                     className="pr-12 bg-black/40 border-border/50 focus-visible:ring-primary h-12 rounded-xl"
                     disabled={isSending}
                     autoComplete="off"
@@ -900,11 +1164,98 @@ export default function ChatPage() {
             </div>
             <h2 className="text-xl font-medium text-foreground tracking-tight">Vault Secured</h2>
             <p className="text-sm mt-2 max-w-[250px] text-center opacity-80 leading-relaxed">
-              Select a contact to establish an end-to-end encrypted connection.
+              Select a contact or group to start an end-to-end encrypted conversation.
             </p>
           </div>
         )}
       </div>
+
+      {/* ── Create Group Modal ────────────────────────────────────────────────── */}
+      {isCreateGroupOpen && (
+        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card border border-border/60 rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-5">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-full bg-primary/15 border border-primary/30 flex items-center justify-center">
+                <Users className="w-5 h-5 text-primary" />
+              </div>
+              <div>
+                <h2 className="font-semibold text-lg">Create Secure Group</h2>
+                <p className="text-xs text-muted-foreground">End-to-end encrypted for all members</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Group Name</label>
+              <Input
+                placeholder="e.g. Team Alpha"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                className="bg-black/30 border-border/50 focus-visible:ring-primary/50"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+                Select Members ({selectedGroupMembers.length} selected)
+              </label>
+              <div className="max-h-52 overflow-y-auto space-y-1 rounded-lg border border-border/40 p-2 bg-black/20">
+                {users.map(u => (
+                  <button
+                    key={u.username}
+                    type="button"
+                    onClick={() => {
+                      setSelectedGroupMembers(prev =>
+                        prev.includes(u.username)
+                          ? prev.filter(m => m !== u.username)
+                          : [...prev, u.username]
+                      );
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-all text-left ${
+                      selectedGroupMembers.includes(u.username)
+                        ? "bg-primary/15 border border-primary/40 text-primary"
+                        : "hover:bg-secondary/40 border border-transparent"
+                    }`}
+                  >
+                    <Avatar className="w-7 h-7 shrink-0">
+                      <AvatarFallback className="bg-black/40 text-[10px]">
+                        {u.username.slice(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="text-sm font-medium">{u.username}</span>
+                    {selectedGroupMembers.includes(u.username) && (
+                      <Check className="w-4 h-4 ml-auto text-primary" />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={() => {
+                  setIsCreateGroupOpen(false);
+                  setNewGroupName("");
+                  setSelectedGroupMembers([]);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="flex-1 bg-primary"
+                disabled={!newGroupName.trim() || selectedGroupMembers.length === 0 || createGroupMutation.isPending}
+                onClick={() => createGroupMutation.mutate({
+                  name: newGroupName.trim(),
+                  members: selectedGroupMembers
+                })}
+              >
+                {createGroupMutation.isPending ? "Creating..." : "🔐 Create Group"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

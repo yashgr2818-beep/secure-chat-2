@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import jwt from "jsonwebtoken";
-import { db, usersTable, messagesTable } from "@workspace/db";
+import { db, usersTable, messagesTable, groupMembersTable, groupMessageKeysTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
 import { logger } from "./lib/logger";
 
@@ -107,6 +107,62 @@ export function setupWebSocket(server: Server) {
 
           if (parsed.type === "message") {
             const p = parsed.payload;
+            if (p.groupId) {
+              const groupId = Number(p.groupId);
+              if (Number.isNaN(groupId) || !p.encryptedContent || !p.keys) return;
+
+              // 1. Verify membership
+              const [membership] = await db.select()
+                .from(groupMembersTable)
+                .where(and(eq(groupMembersTable.groupId, groupId), eq(groupMembersTable.username, username)));
+
+              if (!membership) return;
+
+              // 2. Insert group message
+              const [newMsg] = await db.insert(messagesTable).values({
+                fromUsername: username,
+                groupId: groupId,
+                encryptedContent: p.encryptedContent,
+                iv: p.iv,
+                delivered: true, // Group messages are instantly considered delivered to group stream
+                read: false,
+              }).returning();
+
+              // 3. Insert individual keys for each member
+              const keyValues = Object.entries(p.keys).map(([memberUsername, encKey]) => ({
+                messageId: newMsg.id,
+                username: memberUsername,
+                encryptedKey: encKey as string,
+              }));
+
+              if (keyValues.length > 0) {
+                await db.insert(groupMessageKeysTable).values(keyValues);
+              }
+
+              // 4. Fetch all group members
+              const members = await db.select().from(groupMembersTable).where(eq(groupMembersTable.groupId, groupId));
+
+              // 5. Broadcast to each online group member
+              for (const member of members) {
+                // Return their specific E2EE encrypted AES key!
+                const memberEncryptedKey = p.keys[member.username] || null;
+                const serialized = {
+                  ...serializeMessage(newMsg),
+                  encryptedKey: memberEncryptedKey,
+                };
+
+                if (member.username === username) {
+                  // Echo message_sent back to sender
+                  manager.sendTo(username, { type: "message_sent", payload: serialized });
+                } else {
+                  // Send to other group members
+                  manager.sendTo(member.username, { type: "message", payload: serialized });
+                }
+              }
+              return;
+            }
+
+            // Fallback to 1-to-1 private message
             if (!p.toUsername || !p.encryptedContent) return;
 
             const [newMsg] = await db.insert(messagesTable).values({
@@ -194,11 +250,12 @@ function serializeMessage(m: any) {
   return {
     id: m.id,
     fromUsername: m.fromUsername,
-    toUsername: m.toUsername,
+    toUsername: m.toUsername || null,
+    groupId: m.groupId || null,
     encryptedContent: m.encryptedContent,
-    encryptedKey: m.encryptedKey,
+    encryptedKey: m.encryptedKey || null,
     iv: m.iv,
-    timestamp: m.timestamp.toISOString(),
+    timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : new Date(m.timestamp).toISOString(),
     delivered: m.delivered,
     read: m.read ?? false,
   };
