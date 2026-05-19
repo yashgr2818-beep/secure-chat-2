@@ -13,8 +13,9 @@ function serializeMessage(m: any) {
     encryptedContent: m.encryptedContent,
     encryptedKey: m.encryptedKey,
     iv: m.iv,
-    timestamp: m.timestamp.toISOString(),
+    timestamp: m.timestamp ? (m.timestamp instanceof Date ? m.timestamp.toISOString() : new Date(m.timestamp).toISOString()) : new Date().toISOString(),
     delivered: m.delivered,
+    read: m.read,
   };
 }
 

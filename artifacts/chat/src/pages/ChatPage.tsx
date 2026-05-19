@@ -98,7 +98,10 @@ export default function ChatPage() {
   const me = getMe();
 
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
+  const selectedUserRef = useRef<string | null>(null);
+  selectedUserRef.current = selectedUser;
   const [messages, setMessages] = useState<Record<string, DecryptedMessage[]>>({});
+  const messageInputRef = useRef(""); // Track input for draft preservation
   const [messageInput, setMessageInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -205,6 +208,11 @@ export default function ChatPage() {
       return;
     }
 
+    // Request desktop notification permission on login/mount
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission();
+    }
+
     // Load private key
     loadPrivateKey(me.username).then(key => {
       if (!key) {
@@ -260,9 +268,28 @@ export default function ChatPage() {
           }));
         }
 
-        // If this incoming message is from the currently-open conversation, auto-read it
-        if (msg.fromUsername !== me.username && msg.fromUsername === selectedUser) {
-          sendReadReceipt(msg.fromUsername);
+        // Handle incoming message notifications (only if it's from another user)
+        if (msg.fromUsername !== me.username) {
+          const activeUser = selectedUserRef.current;
+          
+          if (msg.fromUsername !== activeUser) {
+            // In-app Toast alert
+            toast({
+              title: `💬 Secure message from ${msg.fromUsername}`,
+              description: decrypted.decryptedContent || "🔒 Encrypted content received",
+              duration: 4000,
+            });
+
+            // Browser desktop notification if tab is in the background
+            if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+              new Notification(`🔒 Secure Message from ${msg.fromUsername}`, {
+                body: decrypted.decryptedContent || "Encrypted message content",
+              });
+            }
+          } else {
+            // Auto-read if we are currently looking at the chat
+            sendReadReceipt(msg.fromUsername);
+          }
         }
       }),
 
