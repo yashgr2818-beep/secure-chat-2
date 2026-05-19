@@ -339,6 +339,18 @@ export default function ChatPage() {
     return map;
   }, [messages]);
 
+  // Unread counts map per contact based on unreadData query
+  const unreadCountMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    if (!unreadData) return map;
+    for (const msg of unreadData) {
+      if (msg.fromUsername !== me?.username && msg.fromUsername !== selectedUser) {
+        map[msg.fromUsername] = (map[msg.fromUsername] || 0) + 1;
+      }
+    }
+    return map;
+  }, [unreadData, selectedUser, me?.username]);
+
   // Combine server status with real-time status, sort by most recent message
   const users = useMemo(() => {
     if (!usersData) return [];
@@ -672,6 +684,7 @@ export default function ChatPage() {
                 const lastMsgTime = lastMsg
                   ? format(new Date(lastMsg.timestamp), "HH:mm")
                   : null;
+                const unreadCount = unreadCountMap[user.username] || 0;
                 return (
                   <button
                     key={user.username}
@@ -694,16 +707,25 @@ export default function ChatPage() {
                         }`}
                       />
                     </div>
-                    <div className="flex flex-col items-start text-left flex-1 overflow-hidden">
-                      <div className="flex items-center justify-between w-full">
-                        <span className="font-medium truncate tracking-tight">{user.username}</span>
-                        {lastMsgTime && (
-                          <span className="text-[10px] text-muted-foreground/60 shrink-0 ml-1">{lastMsgTime}</span>
-                        )}
-                      </div>
-                      <span className="text-xs text-muted-foreground truncate w-full">
+                    <div className="flex flex-col items-start text-left flex-1 overflow-hidden pr-1">
+                      <span className="font-medium truncate tracking-tight w-full">{user.username}</span>
+                      <span className="text-xs text-muted-foreground truncate w-full mt-0.5">
                         {lastMsgText ?? (user.online ? "Connected" : user.lastSeen ? `Last seen ${format(new Date(user.lastSeen), "MMM d, HH:mm")}` : "Offline")}
                       </span>
+                    </div>
+                    <div className="flex flex-col items-end justify-between shrink-0 self-stretch min-h-10">
+                      {lastMsgTime ? (
+                        <span className="text-[10px] text-muted-foreground/60">{lastMsgTime}</span>
+                      ) : (
+                        <span className="text-[10px] opacity-0">00:00</span>
+                      )}
+                      {unreadCount > 0 ? (
+                        <Badge className="bg-green-500 hover:bg-green-600 text-white rounded-full text-[9px] min-w-[18px] h-[18px] p-0 flex items-center justify-center font-bold shadow-[0_0_8px_rgba(34,197,94,0.3)] border-0 mt-1">
+                          {unreadCount}
+                        </Badge>
+                      ) : (
+                        <div className="h-[18px] mt-1" />
+                      )}
                     </div>
                   </button>
                 );
@@ -717,7 +739,7 @@ export default function ChatPage() {
             <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
             <span>Identity: {me?.username}</span>
           </div>
-          <button
+         <button
             onClick={handlePanicWipe}
             title="Emergency Wipe (Ctrl+Shift+W)"
             className="p-1.5 rounded-md text-red-400 hover:text-red-300 hover:bg-red-950/30 border border-transparent hover:border-red-900/50 transition-all shrink-0 cursor-pointer"
