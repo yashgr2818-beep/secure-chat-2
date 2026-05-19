@@ -12,6 +12,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useLogin } from "@workspace/api-client-react";
 import { setToken, setMe } from "@/lib/auth";
 import { connectWS } from "@/lib/websocket";
+import { ServerSettings } from "@/components/ServerSettings";
 
 const formSchema = z.object({
   username: z.string().min(3, "Username must be at least 3 characters").max(32),
@@ -53,8 +54,9 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen w-full flex items-center justify-center p-4 bg-background selection:bg-primary/30">
-      <Card className="w-full max-w-md border-border/50 shadow-2xl bg-card/50 backdrop-blur-sm">
+    <div className="min-h-screen w-full flex items-center justify-center p-4 bg-background selection:bg-primary/30 relative">
+      <ServerSettings />
+      <Card className="w-full max-w-md border-border/50 shadow-2xl bg-card/50 backdrop-blur-sm relative z-10">
         <CardHeader className="space-y-3 pb-6">
           <div className="flex justify-center mb-2">
             <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center ring-1 ring-primary/30">

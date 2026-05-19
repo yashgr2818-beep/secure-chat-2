@@ -1,5 +1,8 @@
 // Generate RSA-OAEP key pair  
 export async function generateKeyPair(): Promise<CryptoKeyPair> {
+  if (!window.isSecureContext || !window.crypto || !window.crypto.subtle) {
+    throw new Error("Secure context (HTTPS) is required for End-to-End Encryption.");
+  }
   return crypto.subtle.generateKey(
     { name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1,0,1]), hash: "SHA-256" },
     true, ["encrypt", "decrypt"]

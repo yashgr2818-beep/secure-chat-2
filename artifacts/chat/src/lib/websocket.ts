@@ -10,7 +10,8 @@ export function connectWS(token: string) {
   if (socket && socket.readyState === WebSocket.OPEN) return;
   
   let url: string;
-  const apiUrl = import.meta.env.VITE_API_URL;
+  const savedApiUrl = localStorage.getItem("securechat_api_url");
+  const apiUrl = savedApiUrl || import.meta.env.VITE_API_URL;
   if (apiUrl && apiUrl.startsWith("http")) {
     const parsed = new URL(apiUrl);
     const wsProto = parsed.protocol === "https:" ? "wss:" : "ws:";

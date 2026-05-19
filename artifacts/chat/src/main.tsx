@@ -3,7 +3,8 @@ import { setBaseUrl } from "@workspace/api-client-react";
 import App from "./App";
 import "./index.css";
 
-const apiUrl = import.meta.env.VITE_API_URL;
+const savedApiUrl = localStorage.getItem("securechat_api_url");
+const apiUrl = savedApiUrl || import.meta.env.VITE_API_URL;
 if (apiUrl) {
   setBaseUrl(apiUrl);
 }
