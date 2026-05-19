@@ -352,10 +352,10 @@ export default function ChatPage() {
       .sort((a, b) => {
         const aTime = lastMessageMap[a.username]?.timestamp
           ? new Date(lastMessageMap[a.username].timestamp).getTime()
-          : (a.lastSeen ? new Date(a.lastSeen).getTime() : 0);
+          : (a.lastMessageAt ? new Date(a.lastMessageAt).getTime() : (a.lastSeen ? new Date(a.lastSeen).getTime() : 0));
         const bTime = lastMessageMap[b.username]?.timestamp
           ? new Date(lastMessageMap[b.username].timestamp).getTime()
-          : (b.lastSeen ? new Date(b.lastSeen).getTime() : 0);
+          : (b.lastMessageAt ? new Date(b.lastMessageAt).getTime() : (b.lastSeen ? new Date(b.lastSeen).getTime() : 0));
         return bTime - aTime; // most recent first
       });
   }, [usersData, liveStatuses, searchQuery, me?.username, lastMessageMap]);
