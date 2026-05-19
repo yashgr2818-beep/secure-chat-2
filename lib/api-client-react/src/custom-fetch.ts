@@ -121,7 +121,6 @@ function hasNoBody(response: Response, method: string): boolean {
   if (method === "HEAD") return true;
   if (NO_BODY_STATUS.has(response.status)) return true;
   if (response.headers.get("content-length") === "0") return true;
-  if (response.body === null) return true;
   return false;
 }
 
