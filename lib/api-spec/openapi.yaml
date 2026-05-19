@@ -243,7 +243,7 @@ components:
 
     Message:
       type: object
-      required: [id, fromUsername, toUsername, encryptedContent, timestamp, delivered]
+      required: [id, fromUsername, toUsername, encryptedContent, timestamp, delivered, read]
       properties:
         id:
           type: integer
@@ -263,6 +263,8 @@ components:
         timestamp:
           type: string
         delivered:
+          type: boolean
+        read:
           type: boolean
 
     ErrorResponse:

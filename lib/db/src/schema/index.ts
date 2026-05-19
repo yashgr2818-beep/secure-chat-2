@@ -19,6 +19,7 @@ export const messagesTable = pgTable("messages", {
   iv: text("iv"),
   timestamp: timestamp("timestamp").defaultNow().notNull(),
   delivered: boolean("delivered").default(false).notNull(),
+  read: boolean("read").default(false).notNull(),
 });
 
 export const insertUserSchema = createInsertSchema(usersTable);

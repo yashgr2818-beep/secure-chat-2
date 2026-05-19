@@ -1,9 +1,13 @@
 type MessageHandler = (msg: any) => void;
 type StatusHandler = (username: string, online: boolean) => void;
+type DeliveredHandler = (messageId: number) => void;
+type ReadHandler = (messageIds: number[]) => void;
 
 let socket: WebSocket | null = null;
 let messageHandlers: MessageHandler[] = [];
 let statusHandlers: StatusHandler[] = [];
+let deliveredHandlers: DeliveredHandler[] = [];
+let readHandlers: ReadHandler[] = [];
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function connectWS(token: string) {
@@ -31,6 +35,12 @@ export function connectWS(token: string) {
       statusHandlers.forEach(h => h(data.username, true));
     } else if (data.type === "user_offline") {
       statusHandlers.forEach(h => h(data.username, false));
+    } else if (data.type === "message_delivered") {
+      // Server tells sender: recipient received the message
+      deliveredHandlers.forEach(h => h(data.payload.id as number));
+    } else if (data.type === "message_read") {
+      // Server tells sender: recipient has read the messages
+      readHandlers.forEach(h => h(data.payload.ids as number[]));
     }
   };
 
@@ -51,6 +61,13 @@ export function sendWSMessage(payload: object) {
   }
 }
 
+/** Notify server that we have read all messages from a given sender. */
+export function sendReadReceipt(fromUsername: string) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "read_receipt", payload: { fromUsername } }));
+  }
+}
+
 export function onMessage(h: MessageHandler) { 
   messageHandlers.push(h); 
   return () => { messageHandlers = messageHandlers.filter(x => x !== h); }; 
@@ -59,4 +76,14 @@ export function onMessage(h: MessageHandler) {
 export function onStatusChange(h: StatusHandler) { 
   statusHandlers.push(h); 
   return () => { statusHandlers = statusHandlers.filter(x => x !== h); }; 
+}
+
+export function onDelivered(h: DeliveredHandler) {
+  deliveredHandlers.push(h);
+  return () => { deliveredHandlers = deliveredHandlers.filter(x => x !== h); };
+}
+
+export function onRead(h: ReadHandler) {
+  readHandlers.push(h);
+  return () => { readHandlers = readHandlers.filter(x => x !== h); };
 }

@@ -88,6 +88,14 @@ export function setupWebSocket(server: Server) {
         await db.update(messagesTable)
           .set({ delivered: true })
           .where(inArray(messagesTable.id, offlineMsgs.map((m: any) => m.id)));
+
+        // Notify original senders that their offline messages are now delivered
+        for (const msg of offlineMsgs) {
+          manager.sendTo(msg.fromUsername, {
+            type: "message_delivered",
+            payload: { id: msg.id, toUsername: msg.toUsername }
+          });
+        }
       }
 
       // Broadcast online status
@@ -108,16 +116,60 @@ export function setupWebSocket(server: Server) {
               encryptedKey: p.encryptedKey,
               iv: p.iv,
               delivered: false,
+              read: false,
             }).returning();
 
             const serialized = serializeMessage(newMsg);
 
+            // Send to recipient
             const delivered = manager.sendTo(p.toUsername, { type: "message", payload: serialized });
+            // Echo back to sender
             manager.sendTo(username, { type: "message_sent", payload: serialized });
 
             if (delivered) {
-              await db.update(messagesTable).set({ delivered: true }).where(eq(messagesTable.id, newMsg.id));
+              // Mark delivered in DB
+              await db.update(messagesTable)
+                .set({ delivered: true })
+                .where(eq(messagesTable.id, newMsg.id));
+
+              // Notify sender: message was delivered (double grey tick)
+              manager.sendTo(username, {
+                type: "message_delivered",
+                payload: { id: newMsg.id, toUsername: p.toUsername }
+              });
             }
+          } else if (parsed.type === "read_receipt") {
+            // Client tells server they have read all messages from a specific sender
+            const { fromUsername: sender } = parsed.payload;
+            if (!sender) return;
+
+            // Find all unread messages from sender to this user
+            const unread = await db
+              .select()
+              .from(messagesTable)
+              .where(
+                and(
+                  eq(messagesTable.fromUsername, sender),
+                  eq(messagesTable.toUsername, username),
+                  eq(messagesTable.read, false)
+                )
+              );
+
+            if (unread.length > 0) {
+              await db.update(messagesTable)
+                .set({ read: true, delivered: true })
+                .where(inArray(messagesTable.id, unread.map((m: any) => m.id)));
+
+              // Notify original sender: their messages were read (double blue tick)
+              manager.sendTo(sender, {
+                type: "message_read",
+                payload: {
+                  ids: unread.map((m: any) => m.id),
+                  byUsername: username
+                }
+              });
+            }
+
           } else if (parsed.type === "ping") {
             manager.sendTo(username, { type: "pong" });
           }
@@ -148,5 +200,6 @@ function serializeMessage(m: any) {
     iv: m.iv,
     timestamp: m.timestamp.toISOString(),
     delivered: m.delivered,
+    read: m.read ?? false,
   };
 }

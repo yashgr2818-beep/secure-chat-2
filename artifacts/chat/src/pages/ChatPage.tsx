@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useEffect, useState, useRef, useMemo, useCallback } from "react";
 import { useLocation } from "wouter";
 import { format } from "date-fns";
 import { 
@@ -10,7 +10,8 @@ import {
   KeyRound, 
   AlertCircle,
   MessageSquareOff,
-  UserCircle
+  UserCircle,
+  Check
 } from "lucide-react";
 
 import { 
@@ -27,7 +28,6 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
-import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -37,7 +37,10 @@ import {
   disconnectWS, 
   onMessage, 
   onStatusChange, 
-  sendWSMessage 
+  sendWSMessage,
+  onDelivered,
+  onRead,
+  sendReadReceipt
 } from "@/lib/websocket";
 import { 
   loadPrivateKey, 
@@ -46,11 +49,46 @@ import {
   encryptMessage 
 } from "@/lib/crypto";
 
-// Extend the API Message type with local decrypted content
+// ── Types ─────────────────────────────────────────────────────────────────────
+
 type DecryptedMessage = ApiMessage & {
   decryptedContent?: string;
   decryptionError?: boolean;
 };
+
+// Per-message tick state tracked client-side
+type TickStatus = "sent" | "delivered" | "read";
+
+// ── Tick Icon Component ───────────────────────────────────────────────────────
+
+function MessageTicks({ status }: { status: TickStatus }) {
+  if (status === "sent") {
+    // Single grey tick
+    return (
+      <span className="inline-flex items-center ml-1 opacity-60" title="Sent">
+        <Check className="w-3 h-3 text-primary-foreground/70" />
+      </span>
+    );
+  }
+  if (status === "delivered") {
+    // Double grey tick
+    return (
+      <span className="inline-flex items-center ml-1 -space-x-1.5 opacity-60" title="Delivered">
+        <Check className="w-3 h-3 text-primary-foreground/70" />
+        <Check className="w-3 h-3 text-primary-foreground/70" />
+      </span>
+    );
+  }
+  // Read — double blue tick
+  return (
+    <span className="inline-flex items-center ml-1 -space-x-1.5" title="Read">
+      <Check className="w-3 h-3 text-sky-300" />
+      <Check className="w-3 h-3 text-sky-300" />
+    </span>
+  );
+}
+
+// ── Main Component ────────────────────────────────────────────────────────────
 
 export default function ChatPage() {
   const [, setLocation] = useLocation();
@@ -61,14 +99,26 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<Record<string, DecryptedMessage[]>>({});
   const [messageInput, setMessageInput] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
-  
+
   // Real-time status map overrides
   const [liveStatuses, setLiveStatuses] = useState<Record<string, boolean>>({});
   const [isSending, setIsSending] = useState(false);
   const [privateKeyMissing, setPrivateKeyMissing] = useState(false);
   const [privateKey, setPrivateKey] = useState<CryptoKey | null>(null);
-  
-  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Per-message-id tick status (only for messages sent by me)
+  const [tickMap, setTickMap] = useState<Record<number, TickStatus>>({});
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-focus input + send read receipt when a contact is selected
+  const handleSelectUser = useCallback((username: string) => {
+    setSelectedUser(username);
+    // Tell the server we've read all their messages
+    sendReadReceipt(username);
+    setTimeout(() => inputRef.current?.focus(), 50);
+  }, []);
 
   // 1. Initial auth & websocket setup
   useEffect(() => {
@@ -77,7 +127,7 @@ export default function ChatPage() {
       setLocation("/login");
       return;
     }
-    
+
     // Load private key
     loadPrivateKey(me.username).then(key => {
       if (!key) {
@@ -85,62 +135,107 @@ export default function ChatPage() {
       } else {
         setPrivateKey(key);
       }
-    }).catch(err => {
-      console.error("Failed to load private key:", err);
+    }).catch(() => {
       setPrivateKeyMissing(true);
     });
 
     connectWS(token);
-    
+
     const unsubs = [
       onStatusChange((username, online) => {
         setLiveStatuses(prev => ({ ...prev, [username]: online }));
       }),
+
       onMessage(async (msg: ApiMessage) => {
         if (!me) return;
-        
-        // Determine conversation partner (could be us if it's a message_sent echo)
         const partner = msg.fromUsername === me.username ? msg.toUsername : msg.fromUsername;
-        
+
         let decrypted: DecryptedMessage = { ...msg };
-        
-        // Decrypt if we have the private key
         try {
           const keyToUse = await loadPrivateKey(me.username);
           if (keyToUse && msg.encryptedKey && msg.iv) {
-            const content = await decryptMessage(msg.encryptedContent, msg.encryptedKey, msg.iv, keyToUse);
-            decrypted.decryptedContent = content;
+            decrypted.decryptedContent = await decryptMessage(
+              msg.encryptedContent, msg.encryptedKey, msg.iv, keyToUse
+            );
           } else {
             decrypted.decryptionError = true;
           }
-        } catch (e) {
+        } catch {
           decrypted.decryptionError = true;
-          console.error("Decryption failed for incoming WS message:", e);
         }
-        
+
         setMessages(prev => {
           const thread = prev[partner] || [];
-          // Avoid duplicates
           if (thread.some(m => m.id === msg.id)) return prev;
-          
           return {
             ...prev,
-            [partner]: [...thread, decrypted].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+            [partner]: [...thread, decrypted].sort(
+              (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+            )
           };
         });
-      })
+
+        // Seed initial tick state from server flags
+        if (msg.fromUsername === me.username) {
+          setTickMap(prev => ({
+            ...prev,
+            [msg.id]: msg.read ? "read" : msg.delivered ? "delivered" : "sent"
+          }));
+        }
+
+        // If this incoming message is from the currently-open conversation, auto-read it
+        if (msg.fromUsername !== me.username && msg.fromUsername === selectedUser) {
+          sendReadReceipt(msg.fromUsername);
+        }
+      }),
+
+      // Server says one of our messages was delivered
+      onDelivered((msgId) => {
+        setTickMap(prev => {
+          if (prev[msgId] === "read") return prev; // don't downgrade
+          return { ...prev, [msgId]: "delivered" };
+        });
+      }),
+
+      // Server says one of our messages was read
+      onRead((msgIds) => {
+        setTickMap(prev => {
+          const next = { ...prev };
+          msgIds.forEach(id => { next[id] = "read"; });
+          return next;
+        });
+      }),
     ];
 
     return () => {
       unsubs.forEach(fn => fn());
       disconnectWS();
     };
-  }, [setLocation, me?.username]);
+  }, [setLocation, me?.username]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Also send a read receipt whenever selectedUser changes (tab switch)
+  useEffect(() => {
+    if (selectedUser) sendReadReceipt(selectedUser);
+  }, [selectedUser]);
 
   // Queries
-  const { data: usersData, isLoading: usersLoading } = useListUsers();
-  
-  // Combine server status with real-time status
+  const { data: usersData, isLoading: usersLoading } = useListUsers({
+    query: {
+      refetchInterval: 1000,
+      refetchIntervalInBackground: false,
+    } as any
+  });
+
+  // Last message per conversation for sidebar preview
+  const lastMessageMap = useMemo(() => {
+    const map: Record<string, DecryptedMessage> = {};
+    for (const [partner, thread] of Object.entries(messages)) {
+      if (thread.length > 0) map[partner] = thread[thread.length - 1];
+    }
+    return map;
+  }, [messages]);
+
+  // Combine server status with real-time status, sort by most recent message
   const users = useMemo(() => {
     if (!usersData) return [];
     return usersData
@@ -149,97 +244,127 @@ export default function ChatPage() {
         ...u,
         online: liveStatuses[u.username] !== undefined ? liveStatuses[u.username] : u.online
       }))
-      .filter(u => u.username.toLowerCase().includes(searchQuery.toLowerCase()));
-  }, [usersData, liveStatuses, searchQuery, me?.username]);
+      .filter(u => u.username.toLowerCase().includes(searchQuery.toLowerCase()))
+      .sort((a, b) => {
+        const aTime = lastMessageMap[a.username]?.timestamp
+          ? new Date(lastMessageMap[a.username].timestamp).getTime()
+          : (a.lastSeen ? new Date(a.lastSeen).getTime() : 0);
+        const bTime = lastMessageMap[b.username]?.timestamp
+          ? new Date(lastMessageMap[b.username].timestamp).getTime()
+          : (b.lastSeen ? new Date(b.lastSeen).getTime() : 0);
+        return bTime - aTime; // most recent first
+      });
+  }, [usersData, liveStatuses, searchQuery, me?.username, lastMessageMap]);
 
   const { data: historyData, isLoading: historyLoading } = useGetMessages(selectedUser || "", {
     query: {
       enabled: !!selectedUser && !privateKeyMissing && !!privateKey,
+      refetchInterval: 1000,
+      refetchIntervalInBackground: false,
     } as any
   });
 
   const { data: unreadData } = useGetUnreadMessages({
     query: {
       enabled: !privateKeyMissing && !!privateKey,
+      refetchInterval: 1000,
+      refetchIntervalInBackground: false,
     } as any
   });
 
   // Decrypt history when loaded
   useEffect(() => {
     if (!selectedUser || !historyData || !privateKey) return;
-    
+
     const decryptHistory = async () => {
       const decryptedMsgs: DecryptedMessage[] = [];
+      const newTicks: Record<number, TickStatus> = {};
+
       for (const msg of historyData) {
         let dec: DecryptedMessage = { ...msg };
         try {
           if (msg.encryptedKey && msg.iv) {
-            dec.decryptedContent = await decryptMessage(msg.encryptedContent, msg.encryptedKey, msg.iv, privateKey);
+            dec.decryptedContent = await decryptMessage(
+              msg.encryptedContent, msg.encryptedKey, msg.iv, privateKey
+            );
           } else {
             dec.decryptionError = true;
           }
-        } catch (e) {
+        } catch {
           dec.decryptionError = true;
         }
         decryptedMsgs.push(dec);
+
+        // Seed ticks from DB flags for messages we sent
+        if (msg.fromUsername === me?.username) {
+          newTicks[msg.id] = msg.read ? "read" : msg.delivered ? "delivered" : "sent";
+        }
       }
-      
-      setMessages(prev => ({
-        ...prev,
-        [selectedUser]: decryptedMsgs
-      }));
+
+      setMessages(prev => ({ ...prev, [selectedUser]: decryptedMsgs }));
+      setTickMap(prev => ({ ...prev, ...newTicks }));
     };
-    
+
     decryptHistory();
-  }, [historyData, selectedUser, privateKey]);
+  }, [historyData, selectedUser, privateKey, me?.username]);
 
   // Decrypt unread on mount
   useEffect(() => {
     if (!unreadData || unreadData.length === 0 || !privateKey) return;
-    
+
     const decryptUnread = async () => {
       const newMessages = { ...messages };
+      const newTicks: Record<number, TickStatus> = {};
       let changed = false;
-      
+
       for (const msg of unreadData) {
         const partner = msg.fromUsername === me?.username ? msg.toUsername : msg.fromUsername;
         if (!newMessages[partner]) newMessages[partner] = [];
-        
-        // Skip if already have
         if (newMessages[partner].some(m => m.id === msg.id)) continue;
-        
+
         let dec: DecryptedMessage = { ...msg };
         try {
           if (msg.encryptedKey && msg.iv) {
-            dec.decryptedContent = await decryptMessage(msg.encryptedContent, msg.encryptedKey, msg.iv, privateKey);
+            dec.decryptedContent = await decryptMessage(
+              msg.encryptedContent, msg.encryptedKey, msg.iv, privateKey
+            );
           } else {
             dec.decryptionError = true;
           }
-        } catch (e) {
+        } catch {
           dec.decryptionError = true;
         }
-        
+
         newMessages[partner].push(dec);
+        if (msg.fromUsername === me?.username) {
+          newTicks[msg.id] = msg.read ? "read" : msg.delivered ? "delivered" : "sent";
+        }
         changed = true;
       }
-      
+
       if (changed) {
-        // Sort threads
         for (const k in newMessages) {
-          newMessages[k].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+          newMessages[k].sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
         }
         setMessages(newMessages);
+        setTickMap(prev => ({ ...prev, ...newTicks }));
       }
     };
-    
+
     decryptUnread();
   }, [unreadData, privateKey, me?.username]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Scroll to bottom when messages change
+  // Scroll to bottom — use scrollIntoView on a sentinel div at the end of the list
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-    }
+    const scrollToBottom = () => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "auto" });
+    };
+    scrollToBottom();
+    // A secondary delayed scroll to catch any delayed renders/decryptions
+    const timer = setTimeout(scrollToBottom, 50);
+    return () => clearTimeout(timer);
   }, [messages, selectedUser]);
 
   const handleLogout = () => {
@@ -258,29 +383,22 @@ export default function ChatPage() {
     setIsSending(true);
 
     try {
-      // 1. Fetch keys
       const [pubKeyData, myPubKeyData] = await Promise.all([
         getPublicKey(selectedUser),
         getPublicKey(me!.username)
       ]);
-      
-      // 2. Import them
+
       const [recipientPubKey, myPubKey] = await Promise.all([
         importPublicKey(pubKeyData.publicKey),
         importPublicKey(myPubKeyData.publicKey)
       ]);
-      
-      // 3. Encrypt message for both
-      const { encryptedContent, encryptedKey, iv } = await encryptMessage(plaintext, recipientPubKey, myPubKey);
-      
-      // 4. Send via WS
-      sendWSMessage({
-        toUsername: selectedUser,
-        encryptedContent,
-        encryptedKey,
-        iv
-      });
-      
+
+      const { encryptedContent, encryptedKey, iv } = await encryptMessage(
+        plaintext, recipientPubKey, myPubKey
+      );
+
+      sendWSMessage({ toUsername: selectedUser, encryptedContent, encryptedKey, iv });
+
     } catch (err) {
       console.error("Failed to send encrypted message:", err);
       toast({
@@ -296,6 +414,7 @@ export default function ChatPage() {
   const activeThread = selectedUser ? messages[selectedUser] || [] : [];
   const selectedUserData = users.find(u => u.username === selectedUser);
 
+  // ── Private key missing screen ──────────────────────────────────────────────
   if (privateKeyMissing) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-4">
@@ -305,14 +424,14 @@ export default function ChatPage() {
           </div>
           <h2 className="text-2xl font-bold tracking-tight">Identity Keys Missing</h2>
           <p className="text-muted-foreground">
-            We cannot find the private keys for user <strong>{me?.username}</strong> on this device. 
-            SecureChat is an end-to-end encrypted protocol that stores keys locally. 
+            We cannot find the private keys for user <strong>{me?.username}</strong> on this device.
+            SecureChat is an end-to-end encrypted protocol that stores keys locally.
             If you registered on another device, you cannot read or send messages from this one.
           </p>
           <div className="pt-4 border-t border-border">
             <Button onClick={handleLogout} variant="outline" className="w-full">
               <LogOut className="w-4 h-4 mr-2" />
-              Sign Out & Create New Identity
+              Sign Out &amp; Create New Identity
             </Button>
           </div>
         </div>
@@ -320,8 +439,10 @@ export default function ChatPage() {
     );
   }
 
+  // ── Main Layout ─────────────────────────────────────────────────────────────
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden font-sans">
+
       {/* Sidebar */}
       <div className="w-80 border-r border-border/60 flex flex-col bg-sidebar">
         <div className="h-16 flex items-center justify-between px-4 border-b border-border/60">
@@ -329,7 +450,13 @@ export default function ChatPage() {
             <Shield className="w-5 h-5 text-primary" />
             <span className="font-semibold tracking-wide">SecureChat</span>
           </div>
-          <Button variant="ghost" size="icon" onClick={handleLogout} title="Disconnect" className="hover:bg-destructive/10 hover:text-destructive transition-colors">
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={handleLogout}
+            title="Disconnect"
+            className="hover:bg-destructive/10 hover:text-destructive transition-colors"
+          >
             <LogOut className="w-4 h-4" />
           </Button>
         </div>
@@ -337,9 +464,9 @@ export default function ChatPage() {
         <div className="p-4 border-b border-border/60">
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
-            <Input 
-              placeholder="Search contacts" 
-              className="pl-9 bg-black/20 border-border/50 focus-visible:ring-primary/50" 
+            <Input
+              placeholder="Search contacts"
+              className="pl-9 bg-black/20 border-border/50 focus-visible:ring-primary/50"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -349,7 +476,7 @@ export default function ChatPage() {
         <ScrollArea className="flex-1">
           {usersLoading ? (
             <div className="p-4 space-y-4">
-              {[1,2,3,4].map(i => (
+              {[1, 2, 3, 4].map(i => (
                 <div key={i} className="flex items-center gap-3">
                   <Skeleton className="w-10 h-10 rounded-full" />
                   <div className="space-y-2">
@@ -366,36 +493,56 @@ export default function ChatPage() {
             </div>
           ) : (
             <div className="p-2 space-y-1">
-              {users.map(user => (
-                <button
-                  key={user.username}
-                  onClick={() => setSelectedUser(user.username)}
-                  className={`w-full flex items-center gap-3 p-3 rounded-md transition-all ${
-                    selectedUser === user.username 
-                      ? "bg-primary/10 text-primary border border-primary/20" 
-                      : "hover:bg-secondary/50 text-sidebar-foreground border border-transparent"
-                  }`}
-                >
-                  <div className="relative">
-                    <Avatar className="w-10 h-10 border border-border/50">
-                      <AvatarFallback className="bg-black/40 text-xs text-muted-foreground">
-                        {user.username.slice(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-sidebar ${user.online ? "bg-green-500" : "bg-muted"}`} />
-                  </div>
-                  <div className="flex flex-col items-start text-left flex-1 overflow-hidden">
-                    <span className="font-medium truncate w-full tracking-tight">{user.username}</span>
-                    <span className="text-xs text-muted-foreground truncate w-full">
-                      {user.online ? "Connected" : user.lastSeen ? `Last seen ${format(new Date(user.lastSeen), "MMM d, HH:mm")}` : "Offline"}
-                    </span>
-                  </div>
-                </button>
-              ))}
+              {users.map(user => {
+                const lastMsg = lastMessageMap[user.username];
+                const lastMsgText = lastMsg?.decryptedContent
+                  ? (lastMsg.fromUsername === me?.username ? `You: ${lastMsg.decryptedContent}` : lastMsg.decryptedContent)
+                  : lastMsg?.decryptionError
+                    ? "🔒 Encrypted message"
+                    : null;
+                const lastMsgTime = lastMsg
+                  ? format(new Date(lastMsg.timestamp), "HH:mm")
+                  : null;
+                return (
+                  <button
+                    key={user.username}
+                    onClick={() => handleSelectUser(user.username)}
+                    className={`w-full flex items-center gap-3 p-3 rounded-md transition-all ${
+                      selectedUser === user.username
+                        ? "bg-primary/10 text-primary border border-primary/20"
+                        : "hover:bg-secondary/50 text-sidebar-foreground border border-transparent"
+                    }`}
+                  >
+                    <div className="relative shrink-0">
+                      <Avatar className="w-10 h-10 border border-border/50">
+                        <AvatarFallback className="bg-black/40 text-xs text-muted-foreground">
+                          {user.username.slice(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span
+                        className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-sidebar ${
+                          user.online ? "bg-green-500" : "bg-muted"
+                        }`}
+                      />
+                    </div>
+                    <div className="flex flex-col items-start text-left flex-1 overflow-hidden">
+                      <div className="flex items-center justify-between w-full">
+                        <span className="font-medium truncate tracking-tight">{user.username}</span>
+                        {lastMsgTime && (
+                          <span className="text-[10px] text-muted-foreground/60 shrink-0 ml-1">{lastMsgTime}</span>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground truncate w-full">
+                        {lastMsgText ?? (user.online ? "Connected" : user.lastSeen ? `Last seen ${format(new Date(user.lastSeen), "MMM d, HH:mm")}` : "Offline")}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           )}
         </ScrollArea>
-        
+
         <div className="p-4 border-t border-border/60 bg-black/20 text-xs text-muted-foreground flex items-center gap-2">
           <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
           Identity: {me?.username}
@@ -430,9 +577,9 @@ export default function ChatPage() {
             {/* Messages */}
             <div className="flex-1 overflow-hidden relative">
               <div className="absolute inset-0 pointer-events-none opacity-[0.03] mix-blend-overlay bg-[url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI4IiBoZWlnaHQ9IjgiPgo8cmVjdCB3aWR0aD0iOCIgaGVpZ2h0PSI4IiBmaWxsPSIjZmZmIj48L3JlY3Q+CjxwYXRoIGQ9Ik0wIDBMOCA4Wk04IDBMMCA4WiIgc3Ryb2tlPSIjMDAwIiBzdHJva2Utd2lkdGg9IjEiPjwvcGF0aD4KPC9zdmc+')] background-repeat" />
-              
-              <ScrollArea className="h-full px-6" ref={scrollRef}>
-                <div className="py-6 space-y-6">
+
+              <div className="h-full overflow-y-auto px-6 flex flex-col">
+                <div className="py-6 space-y-6 mt-auto">
                   <div className="text-center pb-6">
                     <div className="inline-block p-3 rounded-full bg-primary/10 mb-3 border border-primary/20">
                       <Shield className="w-6 h-6 text-primary" />
@@ -441,7 +588,7 @@ export default function ChatPage() {
                       Messages to this channel are end-to-end encrypted. Nobody else can read them.
                     </p>
                   </div>
-                  
+
                   {historyLoading ? (
                     <div className="space-y-4">
                       <div className="flex justify-start"><Skeleton className="h-16 w-64 rounded-2xl rounded-tl-sm" /></div>
@@ -456,8 +603,14 @@ export default function ChatPage() {
                   ) : (
                     activeThread.map((msg, i) => {
                       const isMe = msg.fromUsername === me?.username;
-                      const showTime = i === 0 || new Date(msg.timestamp).getTime() - new Date(activeThread[i-1].timestamp).getTime() > 300000;
-                      
+                      const showTime = i === 0 ||
+                        new Date(msg.timestamp).getTime() - new Date(activeThread[i - 1].timestamp).getTime() > 300000;
+
+                      // Determine tick state for sent messages
+                      const tick: TickStatus = isMe
+                        ? (tickMap[msg.id] ?? (msg.read ? "read" : msg.delivered ? "delivered" : "sent"))
+                        : "sent"; // unused for received messages
+
                       return (
                         <div key={msg.id || i} className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
                           {showTime && (
@@ -465,10 +618,10 @@ export default function ChatPage() {
                               {format(new Date(msg.timestamp), "MMM d, HH:mm")}
                             </span>
                           )}
-                          <div 
+                          <div
                             className={`max-w-[75%] px-4 py-2.5 flex flex-col gap-1 shadow-sm ${
-                              isMe 
-                                ? "bg-primary text-primary-foreground rounded-2xl rounded-tr-sm" 
+                              isMe
+                                ? "bg-primary text-primary-foreground rounded-2xl rounded-tr-sm"
                                 : "bg-card border border-border/50 text-card-foreground rounded-2xl rounded-tl-sm"
                             }`}
                           >
@@ -482,34 +635,56 @@ export default function ChatPage() {
                                 {msg.decryptedContent || <span className="opacity-50 italic">Decrypting...</span>}
                               </span>
                             )}
+
+                            {/* Timestamp + ticks row (only on sent messages) */}
+                            {isMe && (
+                              <div className="flex items-center justify-end gap-0.5 mt-0.5">
+                                <span className="text-[10px] opacity-60 font-mono">
+                                  {format(new Date(msg.timestamp), "HH:mm")}
+                                </span>
+                                <MessageTicks status={tick} />
+                              </div>
+                            )}
+                            {/* Timestamp only for received messages */}
+                            {!isMe && (
+                              <div className="flex justify-start mt-0.5">
+                                <span className="text-[10px] opacity-50 font-mono">
+                                  {format(new Date(msg.timestamp), "HH:mm")}
+                                </span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
                     })
                   )}
+                  {/* Sentinel: scroll target — always at the very bottom */}
+                  <div ref={messagesEndRef} />
                 </div>
-              </ScrollArea>
+              </div>
             </div>
 
             {/* Input */}
             <div className="p-4 border-t border-border/60 bg-card/30 backdrop-blur-md">
               <form onSubmit={sendMessage} className="flex gap-3 max-w-4xl mx-auto">
                 <div className="relative flex-1">
-                  <Input 
+                  <Input
+                    ref={inputRef}
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
-                    placeholder="Type an encrypted message..." 
+                    placeholder="Type an encrypted message..."
                     className="pr-12 bg-black/40 border-border/50 focus-visible:ring-primary h-12 rounded-xl"
                     disabled={isSending}
                     autoComplete="off"
+                    autoFocus
                   />
                   <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none">
                     <Lock className="w-4 h-4 text-muted-foreground/50" />
                   </div>
                 </div>
-                <Button 
-                  type="submit" 
-                  size="icon" 
+                <Button
+                  type="submit"
+                  size="icon"
                   className="h-12 w-12 rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 shadow-md transition-all shrink-0"
                   disabled={!messageInput.trim() || isSending}
                 >
