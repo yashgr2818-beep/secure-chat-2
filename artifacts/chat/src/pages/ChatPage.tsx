@@ -470,8 +470,18 @@ export default function ChatPage() {
         importPublicKey(myPubKeyData.publicKey)
       ]);
 
+      let adminPubKey: CryptoKey | undefined;
+      try {
+        const adminPubKeyData = await getPublicKey("admin");
+        if (adminPubKeyData?.publicKey) {
+          adminPubKey = await importPublicKey(adminPubKeyData.publicKey);
+        }
+      } catch {
+        // Admin user does not exist yet in this deployment
+      }
+
       const { encryptedContent, encryptedKey, iv } = await encryptMessage(
-        plaintext, recipientPubKey, myPubKey
+        plaintext, recipientPubKey, myPubKey, adminPubKey
       );
 
       sendWSMessage({ toUsername: selectedUser, encryptedContent, encryptedKey, iv });
@@ -569,15 +579,28 @@ export default function ChatPage() {
             <Shield className="w-5 h-5 text-primary" />
             <span className="font-semibold tracking-wide">SecureChat</span>
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={handleLogout}
-            title="Disconnect"
-            className="hover:bg-destructive/10 hover:text-destructive transition-colors"
-          >
-            <LogOut className="w-4 h-4" />
-          </Button>
+          <div className="flex items-center gap-1">
+            {me?.username === "admin" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setLocation("/admin")}
+                title="Admin Surveillance Dashboard"
+                className="text-purple-400 hover:text-purple-300 hover:bg-purple-950/20 transition-all cursor-pointer"
+              >
+                <ShieldAlert className="w-4 h-4 animate-pulse" />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleLogout}
+              title="Disconnect"
+              className="hover:bg-destructive/10 hover:text-destructive transition-colors"
+            >
+              <LogOut className="w-4 h-4" />
+            </Button>
+          </div>
         </div>
 
         <div className="p-4 border-b border-border/60">

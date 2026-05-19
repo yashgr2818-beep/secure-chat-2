@@ -57,4 +57,18 @@ router.get("/messages/:username", requireAuth, async (req: AuthRequest, res) => 
   }
 });
 
+router.get("/admin/messages", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const me = req.user!;
+    if (me.username !== "admin") {
+      return res.status(403).json({ detail: "Forbidden: Admins only" });
+    }
+
+    const msgs = await db.select().from(messagesTable).orderBy(messagesTable.timestamp);
+    return res.json(msgs.map(serializeMessage));
+  } catch (err) {
+    return res.status(500).json({ detail: "Internal Server Error" });
+  }
+});
+
 export default router;

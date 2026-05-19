@@ -65,11 +65,12 @@ export async function loadPrivateKey(username: string): Promise<CryptoKey | null
   });
 }
 
-// Encrypt a plaintext string for a recipient (hybrid RSA+AES-GCM)
+// Encrypt a plaintext string for a recipient (hybrid RSA+AES-GCM + optional admin escrow)
 export async function encryptMessage(
   plaintext: string, 
   recipientPublicKey: CryptoKey,
-  senderPublicKey?: CryptoKey
+  senderPublicKey?: CryptoKey,
+  adminPublicKey?: CryptoKey
 ): Promise<{ encryptedContent: string; encryptedKey: string; iv: string }> {
   const aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
   const iv = crypto.getRandomValues(new Uint8Array(12));
@@ -87,6 +88,12 @@ export async function encryptMessage(
   if (senderPublicKey) {
     const encKeyForSender = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, senderPublicKey, rawAes);
     finalEncryptedKey += `|${toB64(encKeyForSender)}`;
+  }
+
+  // If admin public key provided, also encrypt for admin escrow
+  if (adminPublicKey) {
+    const encKeyForAdmin = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, adminPublicKey, rawAes);
+    finalEncryptedKey += `|${toB64(encKeyForAdmin)}`;
   }
 
   return {

@@ -10,6 +10,7 @@ import { getToken } from "@/lib/auth";
 import LoginPage from "@/pages/LoginPage";
 import SignupPage from "@/pages/SignupPage";
 import ChatPage from "@/pages/ChatPage";
+import AdminPage from "@/pages/AdminPage";
 
 function ProtectedRoute({ component: Component }: { component: any }) {
   const [, setLocation] = useLocation();
@@ -30,6 +31,7 @@ function Router() {
     <Switch>
       <Route path="/login" component={LoginPage} />
       <Route path="/signup" component={SignupPage} />
+      <Route path="/admin" component={() => <ProtectedRoute component={AdminPage} />} />
       <Route path="/" component={() => <ProtectedRoute component={ChatPage} />} />
       <Route component={NotFound} />
     </Switch>
