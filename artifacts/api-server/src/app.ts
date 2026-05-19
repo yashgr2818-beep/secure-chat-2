@@ -60,11 +60,7 @@ app.use("/api", router);
 app.use(express.static(frontendDistPath));
 
 // Fallback for Single Page Application routing (serve index.html)
-app.get("/(.*)", (req, res, next) => {
-  // Avoid capturing API requests or websocket requests
-  if (req.path.startsWith("/api") || req.path.startsWith("/ws")) {
-    return next();
-  }
+app.get(/^(?!\/api|\/ws).*$/, (req, res) => {
   const indexPath = path.join(frontendDistPath, "index.html");
   if (fs.existsSync(indexPath)) {
     res.sendFile(indexPath);
