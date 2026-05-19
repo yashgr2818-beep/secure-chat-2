@@ -516,7 +516,7 @@ export default function ChatPage() {
 
   // Decrypt group messages when loaded
   useEffect(() => {
-    if (!selectedGroupId || !groupMessagesData || !privateKey) return;
+    if (!selectedGroupId || !groupMessagesData || !Array.isArray(groupMessagesData) || !privateKey) return;
 
     const decryptGroupMsgs = async () => {
       const decryptedMsgs: DecryptedMessage[] = [];
@@ -711,7 +711,7 @@ export default function ChatPage() {
 
   const activeThread = selectedGroupId ? (messages[`group_${selectedGroupId}`] || []) : (selectedUser ? messages[selectedUser] || [] : []);
   const selectedUserData = selectedUser ? users.find(u => u.username === selectedUser) : undefined;
-  const selectedGroupData = selectedGroupId ? groupsData?.find(g => g.id === selectedGroupId) : undefined;
+  const selectedGroupData = selectedGroupId && Array.isArray(groupsData) ? groupsData.find(g => g.id === selectedGroupId) : undefined;
 
   // ── Self-Destructing / Panic Wipe Screen ────────────────────────────────────
   if (isWiping) {
@@ -939,14 +939,14 @@ export default function ChatPage() {
                 </div>
               </button>
 
-              {!groupsData || groupsData.length === 0 ? (
+              {!groupsData || !Array.isArray(groupsData) || groupsData.length === 0 ? (
                 <div className="p-8 text-center text-muted-foreground flex flex-col items-center">
                   <Users className="w-8 h-8 mb-2 opacity-50" />
                   <p className="text-sm">No groups joined</p>
                 </div>
               ) : (
                 groupsData
-                  .filter(g => g.name.toLowerCase().includes(searchQuery.toLowerCase()))
+                  .filter(g => g.name?.toLowerCase().includes(searchQuery.toLowerCase()))
                   .map(group => {
                     return (
                       <button
