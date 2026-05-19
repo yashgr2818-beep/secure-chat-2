@@ -20,7 +20,7 @@ if (Number.isNaN(port) || port <= 0) {
 const server = http.createServer(app);
 setupWebSocket(server);
 
-server.listen(port, () => {
+server.listen(port, "0.0.0.0", () => {
   logger.info({ port }, "Server listening");
 });
 
