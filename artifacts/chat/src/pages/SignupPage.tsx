@@ -60,7 +60,7 @@ export default function SignupPage() {
           onError: (err: any) => {
             toast({
               title: "Registration Failed",
-              description: err.error || "An error occurred during registration.",
+              description: err.data?.detail || err.message || "An error occurred during registration.",
               variant: "destructive",
             });
             setIsGenerating(false);

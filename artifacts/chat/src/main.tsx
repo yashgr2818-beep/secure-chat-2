@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
-import { setBaseUrl } from "@workspace/api-client-react";
+import { setBaseUrl, setAuthTokenGetter } from "@workspace/api-client-react";
+import { getToken } from "@/lib/auth";
 import App from "./App";
 import "./index.css";
 
@@ -9,4 +10,8 @@ if (apiUrl) {
   setBaseUrl(apiUrl);
 }
 
+// Ensure all authenticated API requests carry the bearer JWT token
+setAuthTokenGetter(getToken);
+
 createRoot(document.getElementById("root")!).render(<App />);
+
