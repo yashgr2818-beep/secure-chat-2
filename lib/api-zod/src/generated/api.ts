@@ -125,3 +125,9 @@ export const GetUnreadMessagesResponseItem = zod.object({
 export const GetUnreadMessagesResponse = zod.array(GetUnreadMessagesResponseItem)
 
 
+/**
+ * @summary Get unread message counts per sender
+ */
+export const GetUnreadCountsResponse = zod.record(zod.string(), zod.number())
+
+

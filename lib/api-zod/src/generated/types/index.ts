@@ -8,6 +8,7 @@
 
 export * from './authResponse';
 export * from './errorResponse';
+export * from './getUnreadCounts200';
 export * from './healthStatus';
 export * from './loginInput';
 export * from './message';

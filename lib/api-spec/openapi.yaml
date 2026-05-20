@@ -170,6 +170,23 @@ paths:
                 items:
                   $ref: "#/components/schemas/Message"
 
+  /messages/unread/counts:
+    get:
+      operationId: getUnreadCounts
+      tags: [messages]
+      summary: Get unread message counts per sender
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  type: integer
+
 components:
   securitySchemes:
     bearerAuth:

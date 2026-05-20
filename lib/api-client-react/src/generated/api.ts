@@ -22,6 +22,7 @@ import type {
 import type {
   AuthResponse,
   ErrorResponse,
+  GetUnreadCounts200,
   HealthStatus,
   LoginInput,
   Message,
@@ -555,6 +556,83 @@ export function useGetUnreadMessages<TData = Awaited<ReturnType<typeof getUnread
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetUnreadMessagesQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return { ...query, queryKey: queryOptions.queryKey };
+}
+
+
+
+
+
+
+
+export const getGetUnreadCountsUrl = () => {
+
+
+
+
+  return `/api/messages/unread/counts`
+}
+
+/**
+ * @summary Get unread message counts per sender
+ */
+export const getUnreadCounts = async ( options?: RequestInit): Promise<GetUnreadCounts200> => {
+
+  return customFetch<GetUnreadCounts200>(getGetUnreadCountsUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetUnreadCountsQueryKey = () => {
+    return [
+    `/api/messages/unread/counts`
+    ] as const;
+    }
+
+
+export const getGetUnreadCountsQueryOptions = <TData = Awaited<ReturnType<typeof getUnreadCounts>>, TError = ErrorType<unknown>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getUnreadCounts>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetUnreadCountsQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getUnreadCounts>>> = ({ signal }) => getUnreadCounts({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getUnreadCounts>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetUnreadCountsQueryResult = NonNullable<Awaited<ReturnType<typeof getUnreadCounts>>>
+export type GetUnreadCountsQueryError = ErrorType<unknown>
+
+
+/**
+ * @summary Get unread message counts per sender
+ */
+
+export function useGetUnreadCounts<TData = Awaited<ReturnType<typeof getUnreadCounts>>, TError = ErrorType<unknown>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getUnreadCounts>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetUnreadCountsQueryOptions(options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

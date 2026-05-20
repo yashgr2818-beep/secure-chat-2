@@ -98,6 +98,33 @@ router.get("/admin/messages", requireAuth, async (req: AuthRequest, res) => {
     const msgs = await db.select().from(messagesTable).orderBy(messagesTable.timestamp);
     return res.json(msgs.map(serializeMessage));
   } catch (err) {
+    console.error("ADMIN MESSAGES ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+router.get("/messages/unread/counts", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const me = req.user!;
+    const counts = await db
+      .select({
+        fromUsername: messagesTable.fromUsername,
+      })
+      .from(messagesTable)
+      .where(
+        and(
+          eq(messagesTable.toUsername, me.username),
+          eq(messagesTable.read, false)
+        )
+      );
+
+    const result: Record<string, number> = {};
+    for (const row of counts) {
+      result[row.fromUsername] = (result[row.fromUsername] || 0) + 1;
+    }
+
+    return res.json(result);
+  } catch (err) {
     return res.status(500).json({ detail: "Internal Server Error" });
   }
 });

@@ -77,3 +77,5 @@ export interface ErrorResponse {
   error: string;
 }
 
+export type GetUnreadCounts200 = {[key: string]: number};
+

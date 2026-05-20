@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
 import { format } from "date-fns";
 import { 
@@ -17,7 +17,7 @@ import {
 import { useListUsers, type Message as ApiMessage } from "@workspace/api-client-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useToast } from "@/hooks/use-toast";
@@ -81,9 +81,14 @@ export default function AdminPage() {
       const data = await customFetch<ApiMessage[]>("/api/admin/messages");
       setRawMessages(data);
     } catch (err) {
+      const errMsg = err && typeof err === "object" && "data" in err && err.data && typeof err.data === "object" && "error" in err.data
+        ? String(err.data.error)
+        : (err && typeof err === "object" && "data" in err && err.data && typeof err.data === "object" && "detail" in err.data
+            ? String(err.data.detail)
+            : "Failed to fetch secure master logs from backend.");
       toast({
         title: "Database Error",
-        description: "Failed to fetch secure master logs from backend.",
+        description: errMsg,
         variant: "destructive"
       });
     } finally {
@@ -107,9 +112,9 @@ export default function AdminPage() {
     if (!selectedUser) return [];
     const partners = new Set<string>();
     for (const msg of rawMessages) {
-      if (msg.fromUsername === selectedUser) {
+      if (msg.fromUsername === selectedUser && msg.toUsername) {
         partners.add(msg.toUsername);
-      } else if (msg.toUsername === selectedUser) {
+      } else if (msg.toUsername === selectedUser && msg.fromUsername) {
         partners.add(msg.fromUsername);
       }
     }
@@ -128,16 +133,21 @@ export default function AdminPage() {
     );
   }, [selectedUser, selectedThreadPartner, rawMessages]);
 
+  const decryptedRef = useRef<Record<number, string>>({});
+
   // Decrypt conversation messages when they change
   useEffect(() => {
     if (!privateKey || activeConversation.length === 0) return;
 
+    let active = true;
+
     const decryptAll = async () => {
-      const newDecrypted: Record<number, string> = { ...decryptedMessages };
+      const newDecrypted: Record<number, string> = {};
       let changed = false;
 
       for (const msg of activeConversation) {
-        if (newDecrypted[msg.id] !== undefined) continue;
+        if (!active) return;
+        if (decryptedRef.current[msg.id] !== undefined) continue;
 
         try {
           if (msg.encryptedKey && msg.iv) {
@@ -148,22 +158,29 @@ export default function AdminPage() {
               privateKey
             );
             newDecrypted[msg.id] = decText;
+            decryptedRef.current[msg.id] = decText;
           } else {
             newDecrypted[msg.id] = "[ERROR: Missing Decryption Key]";
+            decryptedRef.current[msg.id] = "[ERROR: Missing Decryption Key]";
           }
         } catch {
           newDecrypted[msg.id] = "[DECRYPTION FAILED: Message not escrowed for Admin]";
+          decryptedRef.current[msg.id] = "[DECRYPTION FAILED: Message not escrowed for Admin]";
         }
         changed = true;
       }
 
-      if (changed) {
-        setDecryptedMessages(newDecrypted);
+      if (active && changed) {
+        setDecryptedMessages(prev => ({ ...prev, ...newDecrypted }));
       }
     };
 
     decryptAll();
-  }, [activeConversation, privateKey, decryptedMessages]);
+
+    return () => {
+      active = false;
+    };
+  }, [activeConversation, privateKey]);
 
   const handleLogout = () => {
     removeToken();
@@ -279,6 +296,9 @@ export default function AdminPage() {
                       }`}
                     >
                       <Avatar className="w-9 h-9 border border-purple-950/40">
+                        {user.profilePicture ? (
+                          <AvatarImage src={user.profilePicture} className="object-cover w-full h-full" />
+                        ) : null}
                         <AvatarFallback className="bg-purple-950/40 text-purple-300 text-xs">
                           {user.username.slice(0, 2).toUpperCase()}
                         </AvatarFallback>

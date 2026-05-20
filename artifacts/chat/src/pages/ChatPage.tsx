@@ -21,6 +21,8 @@ import {
   useListUsers, 
   useGetMessages, 
   useGetUnreadMessages, 
+  useGetUnreadCounts,
+  getGetUnreadCountsQueryKey,
   useGetPublicKey,
   getPublicKey,
   type Message as ApiMessage,
@@ -105,6 +107,7 @@ export default function ChatPage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const me = getMe();
+  const queryClient = useQueryClient();
 
   const [selectedUser, setSelectedUser] = useState<string | null>(null);
   const selectedUserRef = useRef<string | null>(null);
@@ -147,10 +150,10 @@ export default function ChatPage() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (file.size > 1024 * 1024) {
+    if (file.size > 5 * 1024 * 1024) {
       toast({
         title: "File Too Large",
-        description: "Please choose an image smaller than 1MB.",
+        description: "Please choose an image smaller than 5MB.",
         variant: "destructive"
       });
       return;
@@ -208,8 +211,15 @@ export default function ChatPage() {
     setSelectedGroupId(null);
     // Tell the server we've read all their messages
     sendReadReceipt(username);
+    
+    // Instantly clear the unread count locally for this user
+    queryClient.setQueryData(getGetUnreadCountsQueryKey(), (prev: any) => {
+      if (!prev) return prev;
+      return { ...prev, [username]: 0 };
+    });
+
     setTimeout(() => inputRef.current?.focus(), 50);
-  }, []);
+  }, [queryClient]);
 
   const handleSelectGroup = useCallback((groupId: number) => {
     setSelectedGroupId(groupId);
@@ -274,6 +284,59 @@ export default function ChatPage() {
       setLocation("/login");
     }
   }, [me, isWiping, setLocation]);
+
+  // Queries
+  const { data: usersData, isLoading: usersLoading } = useListUsers({
+    query: {
+      refetchInterval: 1000,
+      refetchIntervalInBackground: false,
+    } as any
+  });
+
+  const { data: historyData, isLoading: historyLoading } = useGetMessages(selectedUser || "", {
+    query: {
+      enabled: !!selectedUser && !privateKeyMissing && !!privateKey,
+      refetchInterval: 1000,
+      refetchIntervalInBackground: false,
+    } as any
+  });
+
+  const { data: unreadData } = useGetUnreadMessages({
+    query: {
+      enabled: !privateKeyMissing && !!privateKey,
+      refetchInterval: 1000,
+      refetchIntervalInBackground: false,
+    } as any
+  });
+
+  const { data: serverUnreadCounts, refetch: refetchUnreadCounts } = useGetUnreadCounts({
+    query: {
+      enabled: !privateKeyMissing && !!privateKey,
+      refetchInterval: 2000,
+      refetchIntervalInBackground: false,
+    } as any
+  });
+
+  const { data: groupsData, refetch: refetchGroups } = useQuery<any[]>({
+    queryKey: ["groups"],
+    queryFn: async () => {
+      const res = await customFetch("/api/groups");
+      return res as any[];
+    },
+    refetchInterval: 2000,
+    enabled: !privateKeyMissing && !!privateKey,
+  });
+
+  const { data: groupMessagesData, isLoading: groupMessagesLoading } = useQuery<any[]>({
+    queryKey: ["groupMessages", selectedGroupId],
+    queryFn: async () => {
+      if (!selectedGroupId) return [];
+      const res = await customFetch(`/api/groups/${selectedGroupId}/messages`);
+      return res as any[];
+    },
+    enabled: !!selectedGroupId && !privateKeyMissing && !!privateKey,
+    refetchInterval: 1000,
+  });
 
   // Keyboard shortcut for Panic Wipe (Ctrl + Shift + W)
   useEffect(() => {
@@ -366,8 +429,13 @@ export default function ChatPage() {
 
         // Direct message handling (fallback)
         const partner = msg.fromUsername === me.username ? msg.toUsername! : msg.fromUsername;
+        const activeUser = selectedUserRef.current;
 
         let decrypted: DecryptedMessage = { ...msg };
+        if (msg.fromUsername !== me.username && msg.fromUsername === activeUser) {
+          decrypted.read = true;
+        }
+
         try {
           const keyToUse = await loadPrivateKey(me.username);
           if (keyToUse && msg.encryptedKey && msg.iv) {
@@ -402,8 +470,6 @@ export default function ChatPage() {
 
         // Handle incoming message notifications (only if it's from another user)
         if (msg.fromUsername !== me.username) {
-          const activeUser = selectedUserRef.current;
-          
           if (msg.fromUsername !== activeUser) {
             // In-app Toast alert
             toast({
@@ -418,6 +484,9 @@ export default function ChatPage() {
                 body: decrypted.decryptedContent || "Encrypted message content",
               });
             }
+
+            // Immediately refetch unread counts
+            refetchUnreadCounts();
           } else {
             // Auto-read if we are currently looking at the chat
             sendReadReceipt(msg.fromUsername);
@@ -482,57 +551,14 @@ export default function ChatPage() {
       unsubs.forEach(fn => fn());
       disconnectWS();
     };
-  }, [setLocation, me?.username]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [setLocation, me?.username, refetchUnreadCounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Also send a read receipt whenever selectedUser or messages updates
   useEffect(() => {
     if (selectedUser) sendReadReceipt(selectedUser);
   }, [selectedUser, messages]);
 
-  // Queries
-  const { data: usersData, isLoading: usersLoading } = useListUsers({
-    query: {
-      refetchInterval: 1000,
-      refetchIntervalInBackground: false,
-    } as any
-  });
 
-  const { data: historyData, isLoading: historyLoading } = useGetMessages(selectedUser || "", {
-    query: {
-      enabled: !!selectedUser && !privateKeyMissing && !!privateKey,
-      refetchInterval: 1000,
-      refetchIntervalInBackground: false,
-    } as any
-  });
-
-  const { data: unreadData } = useGetUnreadMessages({
-    query: {
-      enabled: !privateKeyMissing && !!privateKey,
-      refetchInterval: 1000,
-      refetchIntervalInBackground: false,
-    } as any
-  });
-
-  const { data: groupsData, refetch: refetchGroups } = useQuery<any[]>({
-    queryKey: ["groups"],
-    queryFn: async () => {
-      const res = await customFetch("/api/groups");
-      return res as any[];
-    },
-    refetchInterval: 2000,
-    enabled: !privateKeyMissing && !!privateKey,
-  });
-
-  const { data: groupMessagesData, isLoading: groupMessagesLoading } = useQuery<any[]>({
-    queryKey: ["groupMessages", selectedGroupId],
-    queryFn: async () => {
-      if (!selectedGroupId) return [];
-      const res = await customFetch(`/api/groups/${selectedGroupId}/messages`);
-      return res as any[];
-    },
-    enabled: !!selectedGroupId && !privateKeyMissing && !!privateKey,
-    refetchInterval: 1000,
-  });
 
   // Last message per conversation for sidebar preview
   const lastMessageMap = useMemo(() => {
@@ -543,17 +569,14 @@ export default function ChatPage() {
     return map;
   }, [messages]);
 
-  // Unread counts map per contact based on unreadData query
+  // Unread counts map per contact based on server unread counts
   const unreadCountMap = useMemo(() => {
-    const map: Record<string, number> = {};
-    if (!unreadData) return map;
-    for (const msg of unreadData) {
-      if (msg.fromUsername !== me?.username && msg.fromUsername !== selectedUser) {
-        map[msg.fromUsername] = (map[msg.fromUsername] || 0) + 1;
-      }
+    const map: Record<string, number> = { ...(serverUnreadCounts || {}) };
+    if (selectedUser) {
+      map[selectedUser] = 0;
     }
     return map;
-  }, [unreadData, selectedUser, me?.username]);
+  }, [serverUnreadCounts, selectedUser]);
 
   // Combine server status with real-time status, sort by most recent message
   const users = useMemo(() => {
@@ -683,11 +706,12 @@ export default function ChatPage() {
         }
         setMessages(newMessages);
         setTickMap(prev => ({ ...prev, ...newTicks }));
+        refetchUnreadCounts();
       }
     };
 
     decryptUnread();
-  }, [unreadData, privateKey, me?.username]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [unreadData, privateKey, me?.username, refetchUnreadCounts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Scroll to bottom — use scrollIntoView on a sentinel div at the end of the list
   useEffect(() => {
