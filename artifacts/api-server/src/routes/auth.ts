@@ -38,6 +38,7 @@ router.post("/auth/signup", async (req, res) => {
       }
     });
   } catch (err) {
+    console.error("SIGNUP ERROR:", err);
     return res.status(500).json({ detail: "Internal Server Error" });
   }
 });
@@ -69,6 +70,7 @@ router.post("/auth/login", async (req, res) => {
       }
     });
   } catch (err) {
+    console.error("LOGIN ERROR:", err);
     return res.status(500).json({ detail: "Internal Server Error" });
   }
 });
