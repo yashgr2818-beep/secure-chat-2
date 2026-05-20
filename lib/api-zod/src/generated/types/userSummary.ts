@@ -12,4 +12,6 @@ export interface UserSummary {
   online: boolean;
   /** @nullable */
   lastSeen?: string | null;
+  /** @nullable */
+  profilePicture?: string | null;
 }

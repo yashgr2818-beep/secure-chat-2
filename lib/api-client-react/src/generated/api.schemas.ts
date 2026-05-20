@@ -32,6 +32,8 @@ export interface UserSummary {
   online: boolean;
   /** @nullable */
   lastSeen?: string | null;
+  /** @nullable */
+  profilePicture?: string | null;
 }
 
 export interface AuthResponse {
@@ -43,6 +45,11 @@ export interface PublicKeyResponse {
   username: string;
   publicKey: string;
 }
+
+export type MessageReactionsItem = {
+  username: string;
+  emoji: string;
+};
 
 export interface Message {
   id: number;
@@ -63,6 +70,7 @@ export interface Message {
   timestamp: string;
   delivered: boolean;
   read: boolean;
+  reactions?: MessageReactionsItem[];
 }
 
 export interface ErrorResponse {

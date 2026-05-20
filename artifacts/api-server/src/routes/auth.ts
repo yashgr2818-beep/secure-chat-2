@@ -33,7 +33,8 @@ router.post("/auth/signup", async (req, res) => {
         id: user.id,
         username: user.username,
         online: true,
-        lastSeen: user.lastSeen?.toISOString() || null
+        lastSeen: user.lastSeen?.toISOString() || null,
+        profilePicture: user.profilePicture
       }
     });
   } catch (err) {
@@ -63,7 +64,8 @@ router.post("/auth/login", async (req, res) => {
         id: user.id,
         username: user.username,
         online: manager.isOnline(user.username),
-        lastSeen: user.lastSeen?.toISOString() || null
+        lastSeen: user.lastSeen?.toISOString() || null,
+        profilePicture: user.profilePicture
       }
     });
   } catch (err) {

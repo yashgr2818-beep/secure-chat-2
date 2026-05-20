@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { db, messagesTable } from "@workspace/db";
+import { db, messagesTable, messageReactionsTable } from "@workspace/db";
 import { eq, and, or, inArray } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth";
 
@@ -30,9 +30,24 @@ router.get("/messages/unread", requireAuth, async (req: AuthRequest, res) => {
       await db.update(messagesTable)
         .set({ delivered: true })
         .where(inArray(messagesTable.id, msgs.map((m: any) => m.id)));
+
+      const msgIds = msgs.map((m: any) => m.id);
+      const reactions = await db.select().from(messageReactionsTable).where(inArray(messageReactionsTable.messageId, msgIds));
+
+      const result = msgs.map((m: any) => {
+        const msgReactions = reactions.filter((r: any) => r.messageId === m.id).map((r: any) => ({
+          username: r.username,
+          emoji: r.emoji
+        }));
+        return {
+          ...serializeMessage(m),
+          reactions: msgReactions
+        };
+      });
+      return res.json(result);
     }
 
-    return res.json(msgs.map(serializeMessage));
+    return res.json([]);
   } catch (err) {
     return res.status(500).json({ detail: "Internal Server Error" });
   }
@@ -52,7 +67,22 @@ router.get("/messages/:username", requireAuth, async (req: AuthRequest, res) => 
       )
       .orderBy(messagesTable.timestamp);
 
-    return res.json(msgs.map(serializeMessage));
+    if (msgs.length === 0) return res.json([]);
+
+    const msgIds = msgs.map((m: any) => m.id);
+    const reactions = await db.select().from(messageReactionsTable).where(inArray(messageReactionsTable.messageId, msgIds));
+
+    const result = msgs.map((m: any) => {
+      const msgReactions = reactions.filter((r: any) => r.messageId === m.id).map((r: any) => ({
+        username: r.username,
+        emoji: r.emoji
+      }));
+      return {
+        ...serializeMessage(m),
+        reactions: msgReactions
+      };
+    });
+    return res.json(result);
   } catch (err) {
     return res.status(500).json({ detail: "Internal Server Error" });
   }

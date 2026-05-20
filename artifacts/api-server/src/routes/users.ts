@@ -30,7 +30,8 @@ router.get("/users", requireAuth, async (req: AuthRequest, res) => {
         username: u.username,
         online: manager.isOnline(u.username),
         lastSeen: u.lastSeen?.toISOString() || null,
-        lastMessageAt: lastMsg ? lastMsg.timestamp.toISOString() : null
+        lastMessageAt: lastMsg ? lastMsg.timestamp.toISOString() : null,
+        profilePicture: u.profilePicture
       };
     }));
 
@@ -53,6 +54,21 @@ router.get("/users/:username/public-key", requireAuth, async (req: AuthRequest, 
       username: user.username,
       publicKey: user.publicKey
     });
+  } catch (err) {
+    return res.status(500).json({ detail: "Internal Server Error" });
+  }
+});
+
+router.put("/users/profile", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const me = req.user!;
+    const { profilePicture } = req.body;
+
+    await db.update(usersTable)
+      .set({ profilePicture })
+      .where(eq(usersTable.username, me.username));
+
+    return res.json({ success: true, profilePicture });
   } catch (err) {
     return res.status(500).json({ detail: "Internal Server Error" });
   }

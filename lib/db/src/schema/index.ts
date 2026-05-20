@@ -8,6 +8,7 @@ export const usersTable = pgTable("users", {
   publicKey: text("public_key").notNull(),
   lastSeen: timestamp("last_seen"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
+  profilePicture: text("profile_picture"),
 });
 
 export const groupsTable = pgTable("groups", {
@@ -44,12 +45,22 @@ export const groupMessageKeysTable = pgTable("group_message_keys", {
   encryptedKey: text("encrypted_key").notNull(),
 });
 
+export const messageReactionsTable = pgTable("message_reactions", {
+  id: serial("id").primaryKey(),
+  messageId: integer("message_id").references(() => messagesTable.id, { onDelete: "cascade" }).notNull(),
+  username: varchar("username", { length: 32 }).notNull(),
+  emoji: varchar("emoji", { length: 16 }).notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
 export const insertUserSchema = createInsertSchema(usersTable);
 export const insertMessageSchema = createInsertSchema(messagesTable);
 export const insertGroupSchema = createInsertSchema(groupsTable);
 export const insertGroupMemberSchema = createInsertSchema(groupMembersTable);
+export const insertMessageReactionSchema = createInsertSchema(messageReactionsTable);
 
 export type User = typeof usersTable.$inferSelect;
 export type Message = typeof messagesTable.$inferSelect;
 export type Group = typeof groupsTable.$inferSelect;
 export type GroupMember = typeof groupMembersTable.$inferSelect;
+export type MessageReaction = typeof messageReactionsTable.$inferSelect;

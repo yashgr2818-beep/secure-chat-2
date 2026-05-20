@@ -5,6 +5,7 @@
  * Secure E2E encrypted chat API
  * OpenAPI spec version: 0.1.0
  */
+import type { MessageReactionsItem } from './messageReactionsItem';
 
 export interface Message {
   id: number;
@@ -25,4 +26,5 @@ export interface Message {
   timestamp: string;
   delivered: boolean;
   read: boolean;
+  reactions?: MessageReactionsItem[];
 }

@@ -11,6 +11,7 @@ export * from './errorResponse';
 export * from './healthStatus';
 export * from './loginInput';
 export * from './message';
+export * from './messageReactionsItem';
 export * from './publicKeyResponse';
 export * from './signupInput';
 export * from './userSummary';

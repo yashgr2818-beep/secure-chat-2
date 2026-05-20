@@ -47,7 +47,8 @@ export const LoginResponse = zod.object({
   "id": zod.number(),
   "username": zod.string(),
   "online": zod.boolean(),
-  "lastSeen": zod.string().nullish()
+  "lastSeen": zod.string().nullish(),
+  "profilePicture": zod.string().nullish()
 })
 })
 
@@ -59,7 +60,8 @@ export const ListUsersResponseItem = zod.object({
   "id": zod.number(),
   "username": zod.string(),
   "online": zod.boolean(),
-  "lastSeen": zod.string().nullish()
+  "lastSeen": zod.string().nullish(),
+  "profilePicture": zod.string().nullish()
 })
 export const ListUsersResponse = zod.array(ListUsersResponseItem)
 
@@ -93,7 +95,11 @@ export const GetMessagesResponseItem = zod.object({
   "iv": zod.string().nullish().describe('Base64-encoded AES-GCM IV'),
   "timestamp": zod.string(),
   "delivered": zod.boolean(),
-  "read": zod.boolean()
+  "read": zod.boolean(),
+  "reactions": zod.array(zod.object({
+  "username": zod.string(),
+  "emoji": zod.string()
+})).optional()
 })
 export const GetMessagesResponse = zod.array(GetMessagesResponseItem)
 
@@ -110,7 +116,11 @@ export const GetUnreadMessagesResponseItem = zod.object({
   "iv": zod.string().nullish().describe('Base64-encoded AES-GCM IV'),
   "timestamp": zod.string(),
   "delivered": zod.boolean(),
-  "read": zod.boolean()
+  "read": zod.boolean(),
+  "reactions": zod.array(zod.object({
+  "username": zod.string(),
+  "emoji": zod.string()
+})).optional()
 })
 export const GetUnreadMessagesResponse = zod.array(GetUnreadMessagesResponseItem)
 

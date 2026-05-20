@@ -32,7 +32,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -46,7 +46,9 @@ import {
   sendWSMessage,
   onDelivered,
   onRead,
-  sendReadReceipt
+  sendReadReceipt,
+  onReaction,
+  sendReaction
 } from "@/lib/websocket";
 import { 
   loadPrivateKey, 
@@ -75,24 +77,24 @@ function MessageTicks({ status }: { status: TickStatus }) {
     // Single grey tick
     return (
       <span className="inline-flex items-center ml-1 opacity-60" title="Sent">
-        <Check className="w-3 h-3 text-primary-foreground/70" />
+        <Check className="w-3.5 h-3.5 text-primary-foreground/75 stroke-[2.5]" />
       </span>
     );
   }
   if (status === "delivered") {
     // Double grey tick
     return (
-      <span className="inline-flex items-center ml-1 -space-x-1.5 opacity-60" title="Delivered">
-        <Check className="w-3 h-3 text-primary-foreground/70" />
-        <Check className="w-3 h-3 text-primary-foreground/70" />
+      <span className="inline-flex items-center ml-1 -space-x-2.5 opacity-60" title="Delivered">
+        <Check className="w-3.5 h-3.5 text-primary-foreground/75 stroke-[2.5]" />
+        <Check className="w-3.5 h-3.5 text-primary-foreground/75 stroke-[2.5]" />
       </span>
     );
   }
   // Read — double blue tick
   return (
-    <span className="inline-flex items-center ml-1 -space-x-1.5" title="Read">
-      <Check className="w-3 h-3 text-sky-300" />
-      <Check className="w-3 h-3 text-sky-300" />
+    <span className="inline-flex items-center ml-1 -space-x-2.5" title="Read">
+      <Check className="w-3.5 h-3.5 text-sky-400 stroke-[3.5]" />
+      <Check className="w-3.5 h-3.5 text-sky-400 stroke-[3.5]" />
     </span>
   );
 }
@@ -135,6 +137,67 @@ export default function ChatPage() {
   const [isWiping, setIsWiping] = useState(false);
   const [wipeProgress, setWipeProgress] = useState(0);
   const [wipeTerminalLogs, setWipeTerminalLogs] = useState<string[]>([]);
+
+  // Profile picture states
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [myProfilePic, setMyProfilePic] = useState<string | null>(me?.profilePicture || null);
+  const [isUploadingProfile, setIsUploadingProfile] = useState(false);
+
+  const handleProfilePictureUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 1024 * 1024) {
+      toast({
+        title: "File Too Large",
+        description: "Please choose an image smaller than 1MB.",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    setIsUploadingProfile(true);
+    const reader = new FileReader();
+    reader.onloadend = async () => {
+      const base64String = reader.result as string;
+      try {
+        const res = await customFetch("/api/users/profile", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profilePicture: base64String }),
+        }) as any;
+
+        if (res.success) {
+          setMyProfilePic(base64String);
+          const currentMe = getMe();
+          if (currentMe) {
+            currentMe.profilePicture = base64String;
+            localStorage.setItem("securechat_me", JSON.stringify(currentMe));
+          }
+          toast({
+            title: "Profile Updated",
+            description: "Your display picture has been updated successfully.",
+          });
+          setIsProfileOpen(false);
+        } else {
+          toast({
+            title: "Upload Failed",
+            description: res.detail || "Failed to update profile picture.",
+            variant: "destructive"
+          });
+        }
+      } catch (err) {
+        toast({
+          title: "Upload Failed",
+          description: "An error occurred while uploading your profile picture.",
+          variant: "destructive"
+        });
+      } finally {
+        setIsUploadingProfile(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -378,6 +441,41 @@ export default function ChatPage() {
           return next;
         });
       }),
+
+      // Handle message reactions in real time
+      onReaction(({ type, messageId, username, emoji }) => {
+        setMessages(prev => {
+          const next = { ...prev };
+          for (const key in next) {
+            const index = next[key].findIndex(m => m.id === messageId);
+            if (index !== -1) {
+              const updatedMsg = { ...next[key][index] };
+              const currentReactions = updatedMsg.reactions ? [...updatedMsg.reactions] : [];
+
+              if (type === "add") {
+                const rxIndex = currentReactions.findIndex(r => r.username === username);
+                if (rxIndex !== -1) {
+                  currentReactions[rxIndex] = { username, emoji };
+                } else {
+                  currentReactions.push({ username, emoji });
+                }
+              } else if (type === "remove") {
+                const rxIndex = currentReactions.findIndex(r => r.username === username && r.emoji === emoji);
+                if (rxIndex !== -1) {
+                  currentReactions.splice(rxIndex, 1);
+                }
+              }
+
+              updatedMsg.reactions = currentReactions;
+              const thread = [...next[key]];
+              thread[index] = updatedMsg;
+              next[key] = thread;
+              break;
+            }
+          }
+          return next;
+        });
+      }),
     ];
 
     return () => {
@@ -386,10 +484,10 @@ export default function ChatPage() {
     };
   }, [setLocation, me?.username]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Also send a read receipt whenever selectedUser changes (tab switch)
+  // Also send a read receipt whenever selectedUser or messages updates
   useEffect(() => {
     if (selectedUser) sendReadReceipt(selectedUser);
-  }, [selectedUser]);
+  }, [selectedUser, messages]);
 
   // Queries
   const { data: usersData, isLoading: usersLoading } = useListUsers({
@@ -418,7 +516,7 @@ export default function ChatPage() {
   const { data: groupsData, refetch: refetchGroups } = useQuery<any[]>({
     queryKey: ["groups"],
     queryFn: async () => {
-      const res = await customFetch("/groups");
+      const res = await customFetch("/api/groups");
       return res as any[];
     },
     refetchInterval: 2000,
@@ -429,7 +527,7 @@ export default function ChatPage() {
     queryKey: ["groupMessages", selectedGroupId],
     queryFn: async () => {
       if (!selectedGroupId) return [];
-      const res = await customFetch(`/groups/${selectedGroupId}/messages`);
+      const res = await customFetch(`/api/groups/${selectedGroupId}/messages`);
       return res as any[];
     },
     enabled: !!selectedGroupId && !privateKeyMissing && !!privateKey,
@@ -691,7 +789,7 @@ export default function ChatPage() {
 
   const createGroupMutation = useMutation({
     mutationFn: async (payload: { name: string; members: string[] }) => {
-      return customFetch("/groups", {
+      return customFetch("/api/groups", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -885,7 +983,10 @@ export default function ChatPage() {
                         }`}
                       >
                         <div className="relative shrink-0">
-                          <Avatar className="w-10 h-10 border border-border/50">
+                          <Avatar className="w-10 h-10 border border-border/50 bg-secondary flex items-center justify-center">
+                            {user.profilePicture ? (
+                              <AvatarImage src={user.profilePicture} className="object-cover w-full h-full" />
+                            ) : null}
                             <AvatarFallback className="bg-black/40 text-xs text-muted-foreground">
                               {user.username.slice(0, 2).toUpperCase()}
                             </AvatarFallback>
@@ -977,18 +1078,48 @@ export default function ChatPage() {
           )}
         </ScrollArea>
 
-        <div className="p-4 border-t border-border/60 bg-black/20 text-xs text-muted-foreground flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-            <span>Identity: {me?.username}</span>
-          </div>
-         <button
-            onClick={handlePanicWipe}
-            title="Emergency Wipe (Ctrl+Shift+W)"
-            className="p-1.5 rounded-md text-red-400 hover:text-red-300 hover:bg-red-950/30 border border-transparent hover:border-red-900/50 transition-all shrink-0 cursor-pointer"
+        <div className="p-3 border-t border-border/60 bg-black/30 flex items-center justify-between gap-3">
+          <button 
+            onClick={() => setIsProfileOpen(true)}
+            className="flex items-center gap-2.5 hover:bg-secondary/40 p-1.5 rounded-lg transition-all text-left overflow-hidden cursor-pointer"
           >
-            <ShieldAlert className="w-4 h-4 animate-pulse" />
+            <Avatar className="w-9 h-9 border border-border/50 bg-secondary flex items-center justify-center shrink-0">
+              {myProfilePic ? (
+                <AvatarImage src={myProfilePic} className="object-cover w-full h-full" />
+              ) : null}
+              <AvatarFallback className="text-xs font-semibold bg-primary/20 text-primary">
+                {me?.username[0].toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <div className="flex flex-col overflow-hidden">
+              <span className="font-semibold text-xs text-foreground truncate">{me?.username}</span>
+              <span className="text-[10px] text-muted-foreground flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                Online Securely
+              </span>
+            </div>
           </button>
+          
+          <div className="flex items-center gap-1.5">
+            {me?.username === "admin" && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setLocation("/admin")}
+                title="Admin Dashboard"
+                className="w-8 h-8 text-purple-400 hover:text-purple-300 hover:bg-purple-950/20 cursor-pointer"
+              >
+                <ShieldAlert className="w-4 h-4 animate-pulse" />
+              </Button>
+            )}
+            <button
+              onClick={handlePanicWipe}
+              title="Emergency Wipe (Ctrl+Shift+W)"
+              className="p-2 rounded-lg text-red-400 hover:text-red-300 hover:bg-red-950/30 border border-transparent hover:border-red-900/50 transition-all shrink-0 cursor-pointer"
+            >
+              <ShieldAlert className="w-4 h-4 animate-pulse" />
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1014,6 +1145,9 @@ export default function ChatPage() {
                 ) : (
                   <>
                     <Avatar className="w-9 h-9 border border-border">
+                      {selectedUserData?.profilePicture ? (
+                        <AvatarImage src={selectedUserData.profilePicture} className="object-cover w-full h-full" />
+                      ) : null}
                       <AvatarFallback className="bg-black/40 text-xs">
                         {selectedUser!.slice(0, 2).toUpperCase()}
                       </AvatarFallback>
@@ -1071,7 +1205,7 @@ export default function ChatPage() {
                         : "sent"; // unused for received messages
 
                       return (
-                        <div key={msg.id || i} className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}>
+                        <div key={msg.id || i} className={`flex flex-col ${isMe ? "items-end" : "items-start"} relative group/msg w-full`}>
                           {showTime && (
                             <span className="text-[10px] text-muted-foreground/60 mb-2 font-mono tracking-wider">
                               {format(new Date(msg.timestamp), "MMM d, HH:mm")}
@@ -1082,39 +1216,108 @@ export default function ChatPage() {
                               {msg.fromUsername}
                             </span>
                           )}
-                          <div
-                            className={`max-w-[75%] px-4 py-2.5 flex flex-col gap-1 shadow-sm ${
-                              isMe
-                                ? "bg-primary text-primary-foreground rounded-2xl rounded-tr-sm"
-                                : "bg-card border border-border/50 text-card-foreground rounded-2xl rounded-tl-sm"
-                            }`}
-                          >
-                            {msg.decryptionError ? (
-                              <div className="flex items-center gap-2 text-destructive opacity-80 text-sm">
-                                <AlertCircle className="w-4 h-4" />
-                                <span>Decryption failed. Invalid keys.</span>
-                              </div>
-                            ) : (
-                              <span className="leading-relaxed break-words text-[15px]">
-                                {msg.decryptedContent || <span className="opacity-50 italic">Decrypting...</span>}
-                              </span>
-                            )}
+                          
+                          <div className="relative max-w-[75%]">
+                            {/* Message Bubble */}
+                            <div
+                              className={`px-4 py-2.5 flex flex-col gap-1 shadow-sm ${
+                                isMe
+                                  ? "bg-primary text-primary-foreground rounded-2xl rounded-tr-sm"
+                                  : "bg-card border border-border/50 text-card-foreground rounded-2xl rounded-tl-sm"
+                              }`}
+                            >
+                              {msg.decryptionError ? (
+                                <div className="flex items-center gap-2 text-destructive opacity-80 text-sm">
+                                  <AlertCircle className="w-4 h-4" />
+                                  <span>Decryption failed. Invalid keys.</span>
+                                </div>
+                              ) : (
+                                <span className="leading-relaxed break-words text-[15px]">
+                                  {msg.decryptedContent || <span className="opacity-50 italic">Decrypting...</span>}
+                                </span>
+                              )}
 
-                            {/* Timestamp + ticks row (only on sent messages) */}
-                            {isMe && (
-                              <div className="flex items-center justify-end gap-0.5 mt-0.5">
-                                <span className="text-[10px] opacity-60 font-mono">
-                                  {format(new Date(msg.timestamp), "HH:mm")}
-                                </span>
-                                <MessageTicks status={tick} />
-                              </div>
-                            )}
-                            {/* Timestamp only for received messages */}
-                            {!isMe && (
-                              <div className="flex justify-start mt-0.5">
-                                <span className="text-[10px] opacity-50 font-mono">
-                                  {format(new Date(msg.timestamp), "HH:mm")}
-                                </span>
+                              {/* Timestamp + ticks row (only on sent messages) */}
+                              {isMe && (
+                                <div className="flex items-center justify-end gap-0.5 mt-0.5">
+                                  <span className="text-[10px] opacity-60 font-mono">
+                                    {format(new Date(msg.timestamp), "HH:mm")}
+                                  </span>
+                                  <MessageTicks status={tick} />
+                                </div>
+                              )}
+                              {/* Timestamp only for received messages */}
+                              {!isMe && (
+                                <div className="flex justify-start mt-0.5">
+                                  <span className="text-[10px] opacity-50 font-mono">
+                                    {format(new Date(msg.timestamp), "HH:mm")}
+                                  </span>
+                                </div>
+                              )}
+
+                              {/* Reactions display nested in bubble */}
+                              {msg.reactions && msg.reactions.length > 0 && (
+                                <div className="flex flex-wrap gap-1 mt-1.5 pt-1.5 border-t border-border/10">
+                                  {Object.entries(
+                                    msg.reactions.reduce((acc: Record<string, string[]>, curr: any) => {
+                                      if (!acc[curr.emoji]) acc[curr.emoji] = [];
+                                      acc[curr.emoji].push(curr.username);
+                                      return acc;
+                                    }, {})
+                                  ).map(([emoji, users]: [string, any]) => (
+                                    <button
+                                      key={emoji}
+                                      onClick={() => sendReaction(msg.id, emoji)}
+                                      title={`Reacted by: ${users.join(", ")}`}
+                                      className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] border transition-all cursor-pointer ${
+                                        users.includes(me?.username)
+                                          ? (isMe 
+                                              ? "bg-primary-foreground/30 border-primary-foreground/40 text-primary-foreground font-semibold"
+                                              : "bg-primary/20 border-primary/30 text-primary font-semibold")
+                                          : (isMe
+                                              ? "bg-primary-foreground/10 border-primary-foreground/20 text-primary-foreground/70 hover:bg-primary-foreground/20"
+                                              : "bg-muted/50 border-border/60 text-muted-foreground hover:bg-muted")
+                                      }`}
+                                    >
+                                      <span>{emoji}</span>
+                                      <span>{users.length}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+
+                            {/* Hover emoji reaction trigger */}
+                            {!msg.decryptionError && msg.id && (
+                              <div className={`absolute top-1/2 -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover\/msg:opacity-100 transition-opacity duration-150 z-20 ${
+                                isMe ? "right-full mr-2" : "left-full ml-2"
+                              }`}>
+                                <div className="relative group/picker">
+                                  <button
+                                    className="p-1.5 rounded-full bg-card border border-border/50 text-muted-foreground hover:text-foreground hover:bg-secondary shadow-sm transition-all cursor-pointer"
+                                    title="Add reaction"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                  </button>
+                                  
+                                  {/* Quick reaction popover */}
+                                  <div className="absolute bottom-full mb-1 hidden group-hover/picker:flex items-center gap-1.5 p-1.5 bg-card border border-border/80 rounded-full shadow-xl z-30 animate-in fade-in slide-in-from-bottom-2 duration-150">
+                                    {["👍", "❤️", "😂", "😮", "😢", "🙏"].map(emoji => {
+                                      const alreadyReacted = msg.reactions?.some((r: any) => r.username === me?.username && r.emoji === emoji);
+                                      return (
+                                        <button
+                                          key={emoji}
+                                          onClick={() => sendReaction(msg.id, emoji)}
+                                          className={`w-7 h-7 flex items-center justify-center text-sm rounded-full transition-all hover:scale-125 cursor-pointer ${
+                                            alreadyReacted ? "bg-primary/20" : "hover:bg-secondary"
+                                          }`}
+                                        >
+                                          {emoji}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
                               </div>
                             )}
                           </div>
@@ -1216,11 +1419,14 @@ export default function ChatPage() {
                         : "hover:bg-secondary/40 border border-transparent"
                     }`}
                   >
-                    <Avatar className="w-7 h-7 shrink-0">
-                      <AvatarFallback className="bg-black/40 text-[10px]">
-                        {u.username.slice(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
+                      <Avatar className="w-8 h-8 border border-border bg-secondary flex items-center justify-center shrink-0">
+                        {u.profilePicture ? (
+                          <AvatarImage src={u.profilePicture} className="object-cover w-full h-full" />
+                        ) : null}
+                        <AvatarFallback className="bg-black/40 text-[10px]">
+                          {u.username.slice(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
                     <span className="text-sm font-medium">{u.username}</span>
                     {selectedGroupMembers.includes(u.username) && (
                       <Check className="w-4 h-4 ml-auto text-primary" />
@@ -1251,6 +1457,95 @@ export default function ChatPage() {
                 })}
               >
                 {createGroupMutation.isPending ? "Creating..." : "🔐 Create Group"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Profile Picture Modal */}
+      {isProfileOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-card border border-border/85 rounded-2xl w-full max-w-sm p-6 shadow-2xl space-y-6 relative overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            <div className="absolute top-0 left-1/2 -translate-x-1/2 w-48 h-48 bg-primary/10 rounded-full blur-3xl pointer-events-none" />
+
+            <div className="flex flex-col items-center text-center space-y-3 relative">
+              <h3 className="text-lg font-bold tracking-tight">Display Picture</h3>
+              <p className="text-xs text-muted-foreground">
+                Upload a secure profile image. It will be visible to your contacts.
+              </p>
+            </div>
+
+            <div className="flex flex-col items-center space-y-4 relative">
+              <Avatar className="w-24 h-24 border-2 border-primary/30 ring-4 ring-primary/5 bg-secondary flex items-center justify-center">
+                {myProfilePic ? (
+                  <AvatarImage src={myProfilePic} className="object-cover w-full h-full" />
+                ) : null}
+                <AvatarFallback className="text-xl font-bold bg-primary/10 text-primary">
+                  {me?.username[0].toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+
+              <div className="flex gap-2">
+                <input
+                  type="file"
+                  id="profile-upload-input"
+                  className="hidden"
+                  accept="image/*"
+                  onChange={handleProfilePictureUpload}
+                  disabled={isUploadingProfile}
+                />
+                <Button
+                  onClick={() => document.getElementById("profile-upload-input")?.click()}
+                  disabled={isUploadingProfile}
+                  className="relative cursor-pointer"
+                >
+                  {isUploadingProfile ? "Uploading..." : "Select Image"}
+                </Button>
+                {myProfilePic && (
+                  <Button
+                    variant="outline"
+                    disabled={isUploadingProfile}
+                    onClick={async () => {
+                      setIsUploadingProfile(true);
+                      try {
+                        const res = await customFetch("/api/users/profile", {
+                          method: "PUT",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ profilePicture: null }),
+                        }) as any;
+                        if (res.success) {
+                          setMyProfilePic(null);
+                          const currentMe = getMe();
+                          if (currentMe) {
+                            currentMe.profilePicture = null;
+                            localStorage.setItem("securechat_me", JSON.stringify(currentMe));
+                          }
+                          toast({ title: "Profile Reset", description: "Display picture removed." });
+                          setIsProfileOpen(false);
+                        }
+                      } catch {
+                        toast({ title: "Error", description: "Failed to reset profile picture.", variant: "destructive" });
+                      } finally {
+                        setIsUploadingProfile(false);
+                      }
+                    }}
+                    className="border-destructive/30 hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                  >
+                    Remove
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            <div className="pt-2 border-t border-border/50 flex justify-end">
+              <Button
+                variant="ghost"
+                onClick={() => setIsProfileOpen(false)}
+                disabled={isUploadingProfile}
+                className="cursor-pointer"
+              >
+                Close
               </Button>
             </div>
           </div>

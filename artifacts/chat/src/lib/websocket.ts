@@ -2,12 +2,14 @@ type MessageHandler = (msg: any) => void;
 type StatusHandler = (username: string, online: boolean) => void;
 type DeliveredHandler = (messageId: number) => void;
 type ReadHandler = (messageIds: number[]) => void;
+export type ReactionHandler = (data: { type: "add" | "remove"; messageId: number; username: string; emoji: string }) => void;
 
 let socket: WebSocket | null = null;
 let messageHandlers: MessageHandler[] = [];
 let statusHandlers: StatusHandler[] = [];
 let deliveredHandlers: DeliveredHandler[] = [];
 let readHandlers: ReadHandler[] = [];
+let reactionHandlers: ReactionHandler[] = [];
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function connectWS(token: string) {
@@ -41,6 +43,10 @@ export function connectWS(token: string) {
     } else if (data.type === "message_read") {
       // Server tells sender: recipient has read the messages
       readHandlers.forEach(h => h(data.payload.ids as number[]));
+    } else if (data.type === "reaction_add") {
+      reactionHandlers.forEach(h => h({ type: "add", ...data.payload }));
+    } else if (data.type === "reaction_remove") {
+      reactionHandlers.forEach(h => h({ type: "remove", ...data.payload }));
     }
   };
 
@@ -86,4 +92,15 @@ export function onDelivered(h: DeliveredHandler) {
 export function onRead(h: ReadHandler) {
   readHandlers.push(h);
   return () => { readHandlers = readHandlers.filter(x => x !== h); };
+}
+
+export function sendReaction(messageId: number, emoji: string) {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: "reaction", payload: { messageId, emoji } }));
+  }
+}
+
+export function onReaction(h: ReactionHandler) {
+  reactionHandlers.push(h);
+  return () => { reactionHandlers = reactionHandlers.filter(x => x !== h); };
 }

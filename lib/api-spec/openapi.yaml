@@ -231,6 +231,8 @@ components:
           type: boolean
         lastSeen:
           type: ["string", "null"]
+        profilePicture:
+          type: ["string", "null"]
 
     PublicKeyResponse:
       type: object
@@ -266,6 +268,16 @@ components:
           type: boolean
         read:
           type: boolean
+        reactions:
+          type: array
+          items:
+            type: object
+            required: [username, emoji]
+            properties:
+              username:
+                type: string
+              emoji:
+                type: string
 
     ErrorResponse:
       type: object

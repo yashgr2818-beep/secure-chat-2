@@ -1,7 +1,7 @@
 import { WebSocketServer, WebSocket } from "ws";
 import type { Server } from "http";
 import jwt from "jsonwebtoken";
-import { db, usersTable, messagesTable, groupMembersTable, groupMessageKeysTable } from "@workspace/db";
+import { db, usersTable, messagesTable, groupMembersTable, groupMessageKeysTable, messageReactionsTable } from "@workspace/db";
 import { eq, inArray, and } from "drizzle-orm";
 import { logger } from "./lib/logger";
 
@@ -226,6 +226,61 @@ export function setupWebSocket(server: Server) {
               });
             }
 
+          } else if (parsed.type === "reaction") {
+            const { messageId, emoji } = parsed.payload;
+            if (!messageId || !emoji) return;
+
+            const [msg] = await db.select().from(messagesTable).where(eq(messagesTable.id, messageId));
+            if (!msg) return;
+
+            let isAllowed = false;
+            if (msg.groupId) {
+              const [membership] = await db.select()
+                .from(groupMembersTable)
+                .where(and(eq(groupMembersTable.groupId, msg.groupId), eq(groupMembersTable.username, username)));
+              if (membership) isAllowed = true;
+            } else {
+              if (msg.fromUsername === username || msg.toUsername === username) {
+                isAllowed = true;
+              }
+            }
+
+            if (!isAllowed) return;
+
+            const [existing] = await db.select()
+              .from(messageReactionsTable)
+              .where(and(eq(messageReactionsTable.messageId, messageId), eq(messageReactionsTable.username, username)));
+
+            const broadcastReactionUpdate = async (m: any, ev: any) => {
+              if (m.groupId) {
+                const members = await db.select().from(groupMembersTable).where(eq(groupMembersTable.groupId, m.groupId));
+                for (const member of members) {
+                  manager.sendTo(member.username, ev);
+                }
+              } else {
+                manager.sendTo(m.fromUsername, ev);
+                if (m.toUsername) {
+                  manager.sendTo(m.toUsername, ev);
+                }
+              }
+            };
+
+            if (existing) {
+              if (existing.emoji === emoji) {
+                await db.delete(messageReactionsTable).where(eq(messageReactionsTable.id, existing.id));
+                await broadcastReactionUpdate(msg, { type: "reaction_remove", payload: { messageId, username, emoji } });
+              } else {
+                await db.update(messageReactionsTable).set({ emoji }).where(eq(messageReactionsTable.id, existing.id));
+                await broadcastReactionUpdate(msg, { type: "reaction_add", payload: { messageId, username, emoji } });
+              }
+            } else {
+              await db.insert(messageReactionsTable).values({
+                messageId,
+                username,
+                emoji,
+              });
+              await broadcastReactionUpdate(msg, { type: "reaction_add", payload: { messageId, username, emoji } });
+            }
           } else if (parsed.type === "ping") {
             manager.sendTo(username, { type: "pong" });
           }

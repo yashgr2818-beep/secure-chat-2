@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { db, groupsTable, groupMembersTable, messagesTable, groupMessageKeysTable } from "@workspace/db";
+import { db, groupsTable, groupMembersTable, messagesTable, groupMessageKeysTable, messageReactionsTable } from "@workspace/db";
 import { eq, and, inArray } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth";
 
@@ -119,17 +119,29 @@ router.get("/groups/:id/messages", requireAuth, async (req: AuthRequest, res) =>
     .where(eq(messagesTable.groupId, groupId))
     .orderBy(messagesTable.timestamp);
 
-    return res.json(rawMsgs.map(m => ({
-      id: m.id,
-      fromUsername: m.fromUsername,
-      groupId,
-      encryptedContent: m.encryptedContent,
-      encryptedKey: m.encryptedKey || null,
-      iv: m.iv,
-      timestamp: m.timestamp ? (m.timestamp instanceof Date ? m.timestamp.toISOString() : new Date(m.timestamp).toISOString()) : new Date().toISOString(),
-      delivered: m.delivered,
-      read: m.read,
-    })));
+    if (rawMsgs.length === 0) return res.json([]);
+
+    const msgIds = rawMsgs.map(m => m.id);
+    const reactions = await db.select().from(messageReactionsTable).where(inArray(messageReactionsTable.messageId, msgIds));
+
+    return res.json(rawMsgs.map(m => {
+      const msgReactions = reactions.filter(r => r.messageId === m.id).map(r => ({
+        username: r.username,
+        emoji: r.emoji
+      }));
+      return {
+        id: m.id,
+        fromUsername: m.fromUsername,
+        groupId,
+        encryptedContent: m.encryptedContent,
+        encryptedKey: m.encryptedKey || null,
+        iv: m.iv,
+        timestamp: m.timestamp ? (m.timestamp instanceof Date ? m.timestamp.toISOString() : new Date(m.timestamp).toISOString()) : new Date().toISOString(),
+        delivered: m.delivered,
+        read: m.read,
+        reactions: msgReactions,
+      };
+    }));
 
   } catch (err) {
     return res.status(500).json({ detail: "Internal Server Error" });
