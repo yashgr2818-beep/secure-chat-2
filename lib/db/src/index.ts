@@ -10,10 +10,15 @@ if (!process.env.DATABASE_URL) {
   );
 }
 
-const isLocal = process.env.DATABASE_URL.includes("localhost") || process.env.DATABASE_URL.includes("127.0.0.1");
+const url = process.env.DATABASE_URL || "";
+let sslConfig: any = { rejectUnauthorized: false };
+if (url.includes("localhost") || url.includes("127.0.0.1") || url.includes(".internal") || url.includes("sslmode=disable")) {
+  sslConfig = false;
+}
+
 export const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: isLocal ? false : { rejectUnauthorized: false },
+  connectionString: url,
+  ssl: sslConfig,
 });
 export const db = drizzle(pool, { schema });
 
