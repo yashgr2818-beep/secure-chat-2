@@ -49,7 +49,8 @@ router.get("/messages/unread", requireAuth, async (req: AuthRequest, res) => {
 
     return res.json([]);
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("MESSAGES POST ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -84,7 +85,8 @@ router.get("/messages/:username", requireAuth, async (req: AuthRequest, res) => 
     });
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("MESSAGES GET LIST ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -125,7 +127,8 @@ router.get("/messages/unread/counts", requireAuth, async (req: AuthRequest, res)
 
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("MESSAGES UNREAD COUNTS ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 

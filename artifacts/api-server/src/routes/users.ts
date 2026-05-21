@@ -37,7 +37,8 @@ router.get("/users", requireAuth, async (req: AuthRequest, res) => {
 
     return res.json(usersWithLastMsg);
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("USERS GET ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -55,7 +56,8 @@ router.get("/users/:username/public-key", requireAuth, async (req: AuthRequest, 
       publicKey: user.publicKey
     });
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("USERS PUBLIC KEY GET ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -70,7 +72,8 @@ router.put("/users/profile", requireAuth, async (req: AuthRequest, res) => {
 
     return res.json({ success: true, profilePicture });
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("USERS PROFILE PUT ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 

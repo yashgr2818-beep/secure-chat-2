@@ -38,7 +38,8 @@ router.post("/groups", requireAuth, async (req: AuthRequest, res) => {
       members: uniqueMembers,
     });
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("GROUPS POST ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -74,7 +75,8 @@ router.get("/groups", requireAuth, async (req: AuthRequest, res) => {
 
     return res.json(result);
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("GROUPS GET LIST ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 
@@ -144,7 +146,8 @@ router.get("/groups/:id/messages", requireAuth, async (req: AuthRequest, res) =>
     }));
 
   } catch (err) {
-    return res.status(500).json({ detail: "Internal Server Error" });
+    console.error("GROUPS GET MESSAGES ERROR:", err);
+    return res.status(500).json({ detail: "Internal Server Error", error: err instanceof Error ? err.message : String(err) });
   }
 });
 
